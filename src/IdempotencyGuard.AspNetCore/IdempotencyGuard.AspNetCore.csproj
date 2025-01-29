@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>IdempotencyGuard.AspNetCore</PackageId>
+    <Description>ASP.NET Core middleware and DI extensions for IdempotencyGuard</Description>
+    <PackageTags>idempotency;payments;aspnetcore;middleware;fintech</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IdempotencyGuard\IdempotencyGuard.csproj" />
+  </ItemGroup>
+
+</Project>

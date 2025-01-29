@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>IdempotencyGuard</PackageId>
+    <Description>Core abstractions and in-memory implementation for idempotent payment API request handling</Description>
+    <PackageTags>idempotency;payments;api;middleware;fintech</PackageTags>
+  </PropertyGroup>
+
+</Project>

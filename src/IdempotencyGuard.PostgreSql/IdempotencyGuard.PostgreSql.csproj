@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>IdempotencyGuard.PostgreSql</PackageId>
+    <Description>PostgreSQL-backed idempotency store using INSERT ON CONFLICT for IdempotencyGuard</Description>
+    <PackageTags>idempotency;payments;postgresql;database;fintech</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IdempotencyGuard\IdempotencyGuard.csproj" />
+  </ItemGroup>
+
+</Project>
