@@ -48,7 +48,9 @@ public class IdempotencyMiddleware
             if (_options.MissingKeyPolicy == MissingKeyPolicy.Reject)
             {
                 httpContext.Response.StatusCode = 400;
-                await httpContext.Response.WriteAsJsonAsync(new { error = $"Missing required header: {_options.HeaderName}" });
+                httpContext.Response.ContentType = "application/json";
+                await httpContext.Response.WriteAsync(
+                    JsonSerializer.Serialize(new { error = $"Missing required header: {_options.HeaderName}" }));
                 return;
             }
 
@@ -83,10 +85,9 @@ public class IdempotencyMiddleware
                     "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
                     idempotencyKey, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
                 httpContext.Response.StatusCode = 422;
-                await httpContext.Response.WriteAsJsonAsync(new
-                {
-                    error = "Idempotency key has already been used with a different request payload"
-                });
+                httpContext.Response.ContentType = "application/json";
+                await httpContext.Response.WriteAsync(
+                    """{"error":"Idempotency key has already been used with a different request payload"}""");
                 break;
         }
     }
@@ -154,7 +155,8 @@ public class IdempotencyMiddleware
         if (response is null)
         {
             httpContext.Response.StatusCode = 409;
-            await httpContext.Response.WriteAsJsonAsync(new { error = "Request is being processed" });
+            httpContext.Response.ContentType = "application/json";
+            await httpContext.Response.WriteAsync("""{"error":"Request is being processed"}""");
             return;
         }
 
@@ -177,7 +179,8 @@ public class IdempotencyMiddleware
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
             httpContext.Response.StatusCode = 409;
-            await httpContext.Response.WriteAsJsonAsync(new { error = "Request with this idempotency key is currently being processed" });
+            httpContext.Response.ContentType = "application/json";
+            await httpContext.Response.WriteAsync("""{"error":"Request with this idempotency key is currently being processed"}""");
             return;
         }
 
@@ -207,7 +210,8 @@ public class IdempotencyMiddleware
         }
 
         httpContext.Response.StatusCode = 409;
-        await httpContext.Response.WriteAsJsonAsync(new { error = "Timed out waiting for concurrent request to complete" });
+        httpContext.Response.ContentType = "application/json";
+        await httpContext.Response.WriteAsync("""{"error":"Timed out waiting for concurrent request to complete"}""");
     }
 
     private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request)
