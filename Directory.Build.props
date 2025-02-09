@@ -5,9 +5,12 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Authors>Olawale Lawal</Authors>
+    <Copyright>Copyright (c) 2026 Olawale Lawal</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://olawalelawal.dev</PackageProjectUrl>
     <RepositoryUrl>https://github.com/lawale/idempotency-guard</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <Version>0.1.0</Version>
+    <PackageVersion>0.1.0</PackageVersion>
   </PropertyGroup>
 </Project>
