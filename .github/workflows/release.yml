@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g. 1.0.0, 1.1.0-beta.1)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: write
+
+    env:
+      # For tag pushes: strip the 'v' prefix (v1.0.0 -> 1.0.0)
+      # For manual dispatch: use the input directly
+      PACKAGE_VERSION: ${{ github.event.inputs.version || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        run: |
+          if [ -n "$PACKAGE_VERSION" ]; then
+            echo "VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
+          else
+            TAG="${GITHUB_REF#refs/tags/v}"
+            echo "VERSION=$TAG" >> $GITHUB_ENV
+          fi
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release /p:Version=${{ env.VERSION }}
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --verbosity normal
+
+      - name: Pack
+        run: |
+          dotnet pack src/IdempotencyGuard/IdempotencyGuard.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.AspNetCore/IdempotencyGuard.AspNetCore.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.Redis/IdempotencyGuard.Redis.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.PostgreSql/IdempotencyGuard.PostgreSql.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.SqlServer/IdempotencyGuard.SqlServer.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+
+      - name: Nuget Login (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: OluwaVader
+
+      - name: Push to NuGet.org
+        run: >
+          dotnet nuget push "./artifacts/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+          --api-key "${{ steps.login.outputs.NUGET_API_KEY }}"
+
+      - name: Create tag if not exists
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "v${{ env.VERSION }}" || true
+          git push origin "v${{ env.VERSION }}" || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          generate_release_notes: true
+          files: ./artifacts/*.nupkg

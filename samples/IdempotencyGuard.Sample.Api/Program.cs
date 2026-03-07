@@ -12,6 +12,37 @@ builder.Services.AddIdempotencyGuard(options =>
     options.ConcurrentRequestTimeout = TimeSpan.FromSeconds(30);
     options.MissingKeyPolicy = MissingKeyPolicy.Reject;
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
+
+    // Cap request body bytes used for fingerprint hashing (default: 1 MB)
+    options.MaxFingerprintBodySize = 1_048_576;
+
+    // Namespace keys by environment to prevent collisions across deployments
+    options.KeyPrefix = builder.Environment.IsProduction() ? "prod:" : "dev:";
+
+    // Customise error responses to match RFC 7807 Problem Details
+    options.ErrorResponseFactory = problem => new
+    {
+        type = $"https://docs.example.com/errors/idempotency/{problem.Kind}",
+        title = problem.Kind switch
+        {
+            IdempotencyErrorKind.MissingKey => "Missing Idempotency Key",
+            IdempotencyErrorKind.FingerprintMismatch => "Payload Mismatch",
+            IdempotencyErrorKind.Conflict => "Request In Progress",
+            IdempotencyErrorKind.Timeout => "Request Timed Out",
+            _ => "Idempotency Error"
+        },
+        status = problem.StatusCode,
+        detail = problem.Message,
+        idempotencyKey = problem.IdempotencyKey
+    };
+
+    // Only replay content-type and location headers
+    options.HeaderAllowList = ["Content-Type", "Location"];
+
+    // Background cleanup of expired entries
+    options.Cleanup.Enabled = true;
+    options.Cleanup.Interval = TimeSpan.FromMinutes(5);
+    options.Cleanup.BatchSize = 1_000;
 });
 
 builder.Services.AddIdempotencyGuardInMemoryStore();
@@ -20,7 +51,7 @@ var app = builder.Build();
 
 app.UseIdempotencyGuard();
 
-app.MapGet("/", () => "IdempotencyGuard Sample API - POST to /payments with an Idempotency-Key header");
+app.MapGet("/", () => "IdempotencyGuard Sample API — POST to /payments or /refunds with an Idempotency-Key header");
 
 app.MapPost("/payments", (PaymentRequest request) =>
 {
