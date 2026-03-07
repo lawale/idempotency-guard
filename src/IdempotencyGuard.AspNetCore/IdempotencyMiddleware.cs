@@ -58,9 +58,9 @@ public class IdempotencyMiddleware
         var endpoint = httpContext.GetEndpoint();
         var idempotentAttr = endpoint?.Metadata.GetMetadata<IdempotentAttribute>();
 
-        var idempotencyKey = httpContext.Request.Headers[_options.HeaderName].FirstOrDefault();
+        var rawKey = httpContext.Request.Headers[_options.HeaderName].FirstOrDefault();
 
-        if (string.IsNullOrWhiteSpace(idempotencyKey))
+        if (string.IsNullOrWhiteSpace(rawKey))
         {
             // Per-endpoint Required override takes precedence, then fall back to global policy
             var requireKey = idempotentAttr?.Required ?? (_options.MissingKeyPolicy == MissingKeyPolicy.Reject);
@@ -76,6 +76,10 @@ public class IdempotencyMiddleware
             return;
         }
 
+        var idempotencyKey = string.IsNullOrEmpty(_options.KeyPrefix)
+            ? rawKey
+            : $"{_options.KeyPrefix}{rawKey}";
+
         // Per-endpoint TTL overrides
         var claimTtl = idempotentAttr?.ClaimTtlSeconds > 0
             ? TimeSpan.FromSeconds(idempotentAttr.ClaimTtlSeconds)
@@ -88,10 +92,15 @@ public class IdempotencyMiddleware
         IdempotencyMetrics.RequestsTotal.Add(1);
 
         var requestBody = await ReadRequestBodyAsync(httpContext.Request);
+        var fingerprintBody = requestBody is not null
+            && _options.MaxFingerprintBodySize > 0
+            && requestBody.Length > _options.MaxFingerprintBodySize
+                ? requestBody[.._options.MaxFingerprintBodySize]
+                : (_options.MaxFingerprintBodySize == 0 ? null : requestBody);
         var fingerprint = RequestFingerprint.Compute(
             httpContext.Request.Method,
             httpContext.Request.Path.Value ?? "/",
-            requestBody);
+            fingerprintBody);
 
         var claimTs = Stopwatch.GetTimestamp();
         var claimResult = await _store.TryClaimAsync(idempotencyKey, fingerprint, claimTtl);
