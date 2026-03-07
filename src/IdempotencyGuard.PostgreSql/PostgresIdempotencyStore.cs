@@ -324,8 +324,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             );
 
             CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_expires
-                ON {FullTableName} (expires_at)
-                WHERE state = 'claimed';";
+                ON {FullTableName} (expires_at);";
 
         await cmd.ExecuteNonQueryAsync(ct);
         _tableCreated = true;
