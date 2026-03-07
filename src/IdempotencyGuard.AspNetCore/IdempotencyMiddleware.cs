@@ -1,6 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
+using IdempotencyGuard.Diagnostics;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -86,29 +87,37 @@ public class IdempotencyMiddleware
             ? TimeSpan.FromSeconds(idempotentAttr.ResponseTtlSeconds)
             : _options.ResponseTtl;
 
+        IdempotencyMetrics.RequestsTotal.Add(1);
+
         var requestBody = await ReadRequestBodyAsync(httpContext.Request);
         var fingerprint = RequestFingerprint.Compute(
             httpContext.Request.Method,
             httpContext.Request.Path.Value ?? "/",
             requestBody);
 
+        var claimTs = Stopwatch.GetTimestamp();
         var claimResult = await _store.TryClaimAsync(idempotencyKey, fingerprint, claimTtl);
+        RecordStoreLatency(claimTs, "claim");
 
         switch (claimResult)
         {
             case ClaimResult.Claimed:
+                IdempotencyMetrics.ClaimsTotal.Add(1);
                 await HandleNewRequestAsync(httpContext, idempotencyKey, fingerprint, requestBody, responseTtl);
                 break;
 
             case ClaimResult.Completed completed:
+                IdempotencyMetrics.ReplaysTotal.Add(1);
                 await ReplayResponseAsync(httpContext, idempotencyKey, completed.Entry);
                 break;
 
             case ClaimResult.AlreadyClaimed:
+                IdempotencyMetrics.ConflictsTotal.Add(1);
                 await HandleConcurrentRequestAsync(httpContext, idempotencyKey, fingerprint);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
+                IdempotencyMetrics.FingerprintMismatchesTotal.Add(1);
                 _logger.LogWarning(
                     "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
                     idempotencyKey, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
@@ -144,7 +153,10 @@ public class IdempotencyMiddleware
                 var headers = new Dictionary<string, string[]>();
                 foreach (var header in httpContext.Response.Headers)
                 {
-                    headers[header.Key] = header.Value.ToArray()!;
+                    if (HeaderFilter.ShouldStoreHeader(header.Key, _options))
+                    {
+                        headers[header.Key] = header.Value.ToArray()!;
+                    }
                 }
 
                 var idempotentResponse = new IdempotentResponse
@@ -154,7 +166,9 @@ public class IdempotencyMiddleware
                     Body = responseBytes
                 };
 
+                var setTs = Stopwatch.GetTimestamp();
                 await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
+                RecordStoreLatency(setTs, "set_response");
 
                 _logger.LogInformation(
                     "Idempotent response stored for key {Key}, status {StatusCode}",
@@ -166,7 +180,10 @@ public class IdempotencyMiddleware
         }
         catch (Exception ex)
         {
+            var releaseTs = Stopwatch.GetTimestamp();
             await _store.ReleaseClaimAsync(key);
+            RecordStoreLatency(releaseTs, "release");
+            IdempotencyMetrics.ClaimsReleased.Add(1);
             _logger.LogWarning(ex, "Idempotency claim released after failure for key {Key}", key);
             throw;
         }
@@ -178,7 +195,9 @@ public class IdempotencyMiddleware
 
     private async Task ReplayResponseAsync(HttpContext httpContext, string key, IdempotencyEntry entry)
     {
+        var getTs = Stopwatch.GetTimestamp();
         var response = await _store.GetResponseAsync(key);
+        RecordStoreLatency(getTs, "get_response");
 
         if (response is null)
         {
@@ -220,9 +239,13 @@ public class IdempotencyMiddleware
             await Task.Delay(delay);
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
+            var pollTs = Stopwatch.GetTimestamp();
             var response = await _store.GetResponseAsync(key);
+            RecordStoreLatency(pollTs, "get_response");
+
             if (response is not null)
             {
+                IdempotencyMetrics.ReplaysTotal.Add(1);
                 _logger.LogInformation("Replaying idempotent response after wait for key {Key}", key);
 
                 httpContext.Response.StatusCode = response.StatusCode;
@@ -240,6 +263,13 @@ public class IdempotencyMiddleware
         httpContext.Response.StatusCode = 409;
         httpContext.Response.ContentType = "application/json";
         await httpContext.Response.WriteAsync("""{"error":"Timed out waiting for concurrent request to complete"}""");
+    }
+
+    private static void RecordStoreLatency(long startTimestamp, string operation)
+    {
+        IdempotencyMetrics.StoreLatency.Record(
+            Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds,
+            new KeyValuePair<string, object?>("operation", operation));
     }
 
     private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request)
