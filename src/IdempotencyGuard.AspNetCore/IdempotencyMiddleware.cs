@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -41,11 +42,29 @@ public class IdempotencyMiddleware
             return;
         }
 
+        if (_options.EndpointFilter is not null)
+        {
+            var httpMethod = new HttpMethod(httpContext.Request.Method);
+            var path = httpContext.Request.Path.Value ?? "/";
+            if (!_options.EndpointFilter(httpMethod, path))
+            {
+                await _next(httpContext);
+                return;
+            }
+        }
+
+        // Read [Idempotent] attribute from endpoint metadata
+        var endpoint = httpContext.GetEndpoint();
+        var idempotentAttr = endpoint?.Metadata.GetMetadata<IdempotentAttribute>();
+
         var idempotencyKey = httpContext.Request.Headers[_options.HeaderName].FirstOrDefault();
 
         if (string.IsNullOrWhiteSpace(idempotencyKey))
         {
-            if (_options.MissingKeyPolicy == MissingKeyPolicy.Reject)
+            // Per-endpoint Required override takes precedence, then fall back to global policy
+            var requireKey = idempotentAttr?.Required ?? (_options.MissingKeyPolicy == MissingKeyPolicy.Reject);
+
+            if (requireKey)
             {
                 httpContext.Response.StatusCode = 400;
                 httpContext.Response.ContentType = "application/json";
@@ -58,18 +77,27 @@ public class IdempotencyMiddleware
             return;
         }
 
+        // Per-endpoint TTL overrides
+        var claimTtl = idempotentAttr?.ClaimTtlSeconds > 0
+            ? TimeSpan.FromSeconds(idempotentAttr.ClaimTtlSeconds)
+            : _options.ClaimTtl;
+
+        var responseTtl = idempotentAttr?.ResponseTtlSeconds > 0
+            ? TimeSpan.FromSeconds(idempotentAttr.ResponseTtlSeconds)
+            : _options.ResponseTtl;
+
         var requestBody = await ReadRequestBodyAsync(httpContext.Request);
         var fingerprint = RequestFingerprint.Compute(
             httpContext.Request.Method,
             httpContext.Request.Path.Value ?? "/",
             requestBody);
 
-        var claimResult = await _store.TryClaimAsync(idempotencyKey, fingerprint, _options.ClaimTtl);
+        var claimResult = await _store.TryClaimAsync(idempotencyKey, fingerprint, claimTtl);
 
         switch (claimResult)
         {
             case ClaimResult.Claimed:
-                await HandleNewRequestAsync(httpContext, idempotencyKey, fingerprint, requestBody);
+                await HandleNewRequestAsync(httpContext, idempotencyKey, fingerprint, requestBody, responseTtl);
                 break;
 
             case ClaimResult.Completed completed:
@@ -92,7 +120,7 @@ public class IdempotencyMiddleware
         }
     }
 
-    private async Task HandleNewRequestAsync(HttpContext httpContext, string key, string fingerprint, byte[]? requestBody)
+    private async Task HandleNewRequestAsync(HttpContext httpContext, string key, string fingerprint, byte[]? requestBody, TimeSpan responseTtl)
     {
         _logger.LogInformation("Idempotency key claimed: {Key}", key);
 
@@ -126,7 +154,7 @@ public class IdempotencyMiddleware
                     Body = responseBytes
                 };
 
-                await _store.SetResponseAsync(key, idempotentResponse, _options.ResponseTtl);
+                await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
 
                 _logger.LogInformation(
                     "Idempotent response stored for key {Key}, status {StatusCode}",

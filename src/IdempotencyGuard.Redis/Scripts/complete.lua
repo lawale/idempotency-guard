@@ -7,5 +7,11 @@ if not existing then
     return 0
 end
 
-redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+-- Preserve the original fingerprint from the claim entry
+local claimed = cjson.decode(existing)
+local completed = cjson.decode(ARGV[1])
+completed.fingerprint = claimed.fingerprint
+local merged = cjson.encode(completed)
+
+redis.call('SET', KEYS[1], merged, 'PX', ARGV[2])
 return 1
