@@ -4,24 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-02-15
+## [1.0.0] - 2026-03-07
 
 ### Added
 - Core idempotency models: `IdempotencyEntry`, `IdempotentResponse`, `ClaimResult` discriminated union
 - `IIdempotencyStore` interface with claim-then-process pattern
-- SHA256 request fingerprinting with JSON property normalization
+- SHA256 request fingerprinting with JSON property normalisation
 - In-memory store with TTL-based expiration for development and testing
 - ASP.NET Core middleware with full request lifecycle handling
 - `IIdempotencyContext` for downstream key generation
-- `[Idempotent]` attribute for per-endpoint configuration
-- Configurable `MissingKeyPolicy` (Allow/Reject) and `ConcurrentRequestPolicy` (Reject/WaitThenReplay)
+- `[Idempotent]` attribute for per-endpoint configuration (TTL overrides, required flag)
+- Configurable `MissingKeyPolicy` (Allow/Reject) and `ConcurrentRequestPolicy` (WaitThenReplay/ReturnConflict)
 - Request payload mismatch detection (422 Unprocessable Entity)
 - Concurrent request handling with wait-and-replay support
 - `X-Idempotent-Replayed: true` header on cached responses
 - Redis store with atomic Lua scripts (SET NX) for distributed environments
 - PostgreSQL store with `INSERT ... ON CONFLICT DO NOTHING` for atomic claims
 - SQL Server store with `MERGE` and `HOLDLOCK` for atomic claims
-- OpenTelemetry metrics: request counts, replays, claims, conflicts, fingerprint mismatches, store latency
+- `EndpointFilter` callback for programmatic route-level opt-in/opt-out
+- `ErrorResponseFactory` with `IdempotencyProblem` and `IdempotencyErrorKind` for custom error response formatting
+- Response header filtering with `HeaderAllowList`, `HeaderDenyList`, and built-in hop-by-hop defaults
+- `MaxFingerprintBodySize` option to cap request body bytes used for fingerprint hashing (default 1 MB)
+- `KeyPrefix` option for environment or tenant namespacing of idempotency keys
+- `IPurgableIdempotencyStore` interface (ISP-compliant) for stores that need active expired-entry removal
+- Background cleanup service (`IdempotencyCleanupService`) with configurable interval, batch size, and iteration limits
+- `CleanupOptions` for tuning cleanup behaviour (enabled flag, interval, batch size, max iterations per sweep)
+- In-memory, PostgreSQL, and SQL Server stores implement `IPurgableIdempotencyStore`; Redis relies on native key TTL
+- Optimised expiry indexes on PostgreSQL (`expires_at`) and SQL Server (`ExpiresAtUtc`) for cleanup and reclaim queries
+- OpenTelemetry metrics: request counts, replays, claims, releases, conflicts, fingerprint mismatches, store latency, purge counts, purge latency
 - Health check integration via `IdempotencyStoreHealthCheck`
 - Sample payment API demonstrating middleware usage
-- Comprehensive README with configuration reference and edge case documentation

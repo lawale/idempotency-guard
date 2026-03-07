@@ -115,22 +115,121 @@ builder.Services.AddIdempotencyGuard(options =>
     // Which HTTP methods require idempotency (default: POST, PUT, PATCH)
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
 
-    // Maximum response body size to cache (default: 1MB)
+    // Maximum response body size to cache (default: 1 MB)
     options.MaxResponseBodySize = 1_048_576;
+
+    // Maximum request body bytes used for fingerprint hashing (default: 1 MB)
+    // Bodies larger than this are fingerprinted using only the first N bytes.
+    // Set to 0 to skip body hashing entirely.
+    options.MaxFingerprintBodySize = 1_048_576;
+
+    // Prefix prepended to every idempotency key before it reaches the store.
+    // Useful for namespacing by environment or tenant.
+    options.KeyPrefix = "production:";
 
     // Disable for testing
     options.Enabled = true;
+
+    // Programmatic route-level opt-in/opt-out
+    options.EndpointFilter = (method, path) => path.StartsWith("/api/");
 });
 ```
 
+### Per-Endpoint Configuration
+
+Use the `[Idempotent]` attribute to override TTLs or require keys on specific endpoints:
+
+```csharp
+app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
+    (PaymentRequest request) =>
+{
+    // ...
+});
+```
+
+## Error Response Customisation
+
+By default, the middleware returns errors in a simple `{"error":"..."}` format. Use `ErrorResponseFactory` to customise error responses — for example, to match [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807) or your API's existing error contract:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.ErrorResponseFactory = problem => new
+    {
+        type = $"https://docs.myapi.com/errors/idempotency/{problem.Kind}",
+        title = problem.Kind switch
+        {
+            IdempotencyErrorKind.MissingKey => "Missing Idempotency Key",
+            IdempotencyErrorKind.FingerprintMismatch => "Payload Mismatch",
+            IdempotencyErrorKind.Conflict => "Request In Progress",
+            IdempotencyErrorKind.Timeout => "Request Timed Out",
+            _ => "Idempotency Error"
+        },
+        status = problem.StatusCode,
+        detail = problem.Message,
+        idempotencyKey = problem.IdempotencyKey
+    };
+});
+```
+
+The `IdempotencyProblem` passed to the factory contains:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `StatusCode` | `int` | HTTP status code (400, 409, or 422) |
+| `Kind` | `IdempotencyErrorKind` | `MissingKey`, `FingerprintMismatch`, `Conflict`, or `Timeout` |
+| `Message` | `string` | Human-readable description of the error |
+| `IdempotencyKey` | `string?` | The key from the request, when available |
+
+## Response Header Filtering
+
+When replaying cached responses, the middleware filters out headers that should not be stored or replayed (hop-by-hop headers per RFC 9110, `Set-Cookie`, `Date`, etc.). You can customise this behaviour:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    // Add extra headers to exclude (on top of the built-in deny list)
+    options.HeaderDenyList = ["X-Request-Id", "X-Correlation-Id"];
+
+    // OR: use an allow list — ONLY these headers will be stored and replayed.
+    // When set, HeaderDenyList and the built-in defaults are ignored entirely.
+    options.HeaderAllowList = ["Content-Type", "Location", "X-Custom-Header"];
+});
+```
+
+Built-in deny list: `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Set-Cookie`, `WWW-Authenticate`, `Proxy-Connection`, `Alt-Svc`, `Server`, `Date`.
+
+## Key Prefixing
+
+Use `KeyPrefix` to namespace idempotency keys by environment or tenant. The prefix is applied at the middleware level before keys reach the store, so it works identically across all store implementations:
+
+```csharp
+// Per-environment
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.KeyPrefix = builder.Environment.IsProduction() ? "prod:" : "staging:";
+});
+
+// Per-tenant (e.g. from a middleware that resolves tenant)
+app.Use(async (context, next) =>
+{
+    var tenantId = context.GetTenantId();
+    var options = context.RequestServices.GetRequiredService<IOptionsSnapshot<IdempotencyOptions>>();
+    options.Value.KeyPrefix = $"tenant-{tenantId}:";
+    await next();
+});
+```
+
+A key `abc-123` with prefix `prod:` is stored as `prod:abc-123`.
+
 ## Stores
 
-| Store | Package | Use Case |
-|-------|---------|----------|
-| In-Memory | `IdempotencyGuard` | Testing and single-instance dev |
-| Redis | `IdempotencyGuard.Redis` | Production — distributed systems |
-| PostgreSQL | `IdempotencyGuard.PostgreSql` | Production — when Redis isn't available |
-| SQL Server | `IdempotencyGuard.SqlServer` | Production — SQL Server environments |
+| Store | Package | Cleanup | Use Case |
+|-------|---------|---------|----------|
+| In-Memory | `IdempotencyGuard` | Timer + purge | Testing and single-instance dev |
+| Redis | `IdempotencyGuard.Redis` | Native key TTL | Production — distributed systems |
+| PostgreSQL | `IdempotencyGuard.PostgreSql` | Background service | Production — when Redis isn't available |
+| SQL Server | `IdempotencyGuard.SqlServer` | Background service | Production — SQL Server environments |
 
 ### Redis Store
 
@@ -138,7 +237,7 @@ builder.Services.AddIdempotencyGuard(options =>
 builder.Services.AddIdempotencyGuardRedisStore("localhost:6379");
 ```
 
-Uses atomic Lua scripts for claim operations (SET NX) to guarantee consistency under concurrent access.
+Uses atomic Lua scripts for claim operations (SET NX) to guarantee consistency under concurrent access. Expired entries are cleaned up automatically by Redis key TTL — no background cleanup needed.
 
 ### PostgreSQL Store
 
@@ -151,7 +250,7 @@ builder.Services.AddIdempotencyGuardPostgresStore(options =>
 });
 ```
 
-Uses `INSERT ... ON CONFLICT DO NOTHING` for atomic claim operations.
+Uses `INSERT ... ON CONFLICT DO NOTHING` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using `DELETE ... FOR UPDATE SKIP LOCKED` for safe concurrent purging.
 
 ### SQL Server Store
 
@@ -164,7 +263,48 @@ builder.Services.AddIdempotencyGuardSqlServerStore(options =>
 });
 ```
 
-Uses `MERGE` with `HOLDLOCK` for atomic claim operations.
+Uses `MERGE` with `HOLDLOCK` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using batched `DELETE TOP` operations.
+
+## Expired Entry Cleanup
+
+Stores that don't have native TTL support (PostgreSQL, SQL Server, In-Memory) implement `IPurgableIdempotencyStore`. A built-in background service sweeps expired entries on a configurable interval:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.Cleanup.Enabled = true;                              // default: true
+    options.Cleanup.Interval = TimeSpan.FromMinutes(5);          // default: 5 minutes
+    options.Cleanup.BatchSize = 1_000;                           // default: 1000
+    options.Cleanup.MaxIterationsPerSweep = 100;                 // default: 100
+});
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `Enabled` | `true` | Set to `false` to disable the background service (e.g. if using an external scheduler) |
+| `Interval` | 5 minutes | Time between cleanup sweeps |
+| `BatchSize` | 1,000 | Max entries deleted per database round-trip |
+| `MaxIterationsPerSweep` | 100 | Caps iterations per sweep to prevent runaway deletes |
+
+The cleanup service automatically detects whether the registered store supports purging. For Redis (which uses native key TTL), the service exits immediately without consuming resources.
+
+### Custom Cleanup
+
+If you prefer to run cleanup on your own schedule (e.g. via a cron job or external scheduler), disable the built-in service and call `PurgeExpiredAsync` directly:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.Cleanup.Enabled = false;
+});
+
+// In your scheduler / job:
+var store = serviceProvider.GetRequiredService<IIdempotencyStore>();
+if (store is IPurgableIdempotencyStore purgable)
+{
+    var deleted = await purgable.PurgeExpiredAsync(batchSize: 5000);
+}
+```
 
 ## Downstream Key Generation
 
@@ -202,7 +342,7 @@ The client times out waiting for your API, but the payment provider call succeed
 
 ## Observability
 
-Built-in OpenTelemetry metrics:
+Built-in [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/) metrics under the `IdempotencyGuard` meter:
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -212,7 +352,19 @@ Built-in OpenTelemetry metrics:
 | `idempotency.claims.released` | Counter | Claims released due to failure |
 | `idempotency.conflicts.total` | Counter | 409 responses (concurrent in-progress) |
 | `idempotency.fingerprint_mismatches.total` | Counter | 422 responses (payload mismatch) |
-| `idempotency.store.latency` | Histogram | Store operation latency |
+| `idempotency.store.latency` | Histogram | Store operation latency (ms) |
+| `idempotency.purge.total` | Counter | Expired entries purged by cleanup |
+| `idempotency.purge.latency` | Histogram | Cleanup sweep latency (ms) |
+
+Subscribe to the meter in your OpenTelemetry setup:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics.AddMeter("IdempotencyGuard");
+    });
+```
 
 ## Health Check
 
