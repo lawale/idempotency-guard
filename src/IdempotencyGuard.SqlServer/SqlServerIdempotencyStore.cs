@@ -333,8 +333,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
                 );
 
                 CREATE NONCLUSTERED INDEX IX_{_options.TableName}_Expires
-                    ON {FullTableName} (ExpiresAtUtc)
-                    WHERE State = 'claimed';
+                    ON {FullTableName} (ExpiresAtUtc);
             END";
 
         await cmd.ExecuteNonQueryAsync(ct);
