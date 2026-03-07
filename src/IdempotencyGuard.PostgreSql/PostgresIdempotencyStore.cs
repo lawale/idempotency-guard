@@ -4,7 +4,7 @@ using Npgsql;
 
 namespace IdempotencyGuard.PostgreSql;
 
-public class PostgresIdempotencyStore : IIdempotencyStore
+public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyStore
 {
     private readonly string _connectionString;
     private readonly PostgresIdempotencyOptions _options;
@@ -275,6 +275,28 @@ public class PostgresIdempotencyStore : IIdempotencyStore
             State = IdempotencyState.Claimed,
             ClaimedAtUtc = now
         });
+    }
+
+    public async Task<int> PurgeExpiredAsync(int batchSize, CancellationToken ct = default)
+    {
+        await EnsureTableCreatedAsync(ct);
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $@"
+            DELETE FROM {FullTableName}
+            WHERE key IN (
+                SELECT key FROM {FullTableName}
+                WHERE expires_at < @now
+                LIMIT @batchSize
+                FOR UPDATE SKIP LOCKED
+            )";
+        cmd.Parameters.AddWithValue("now", DateTime.UtcNow);
+        cmd.Parameters.AddWithValue("batchSize", batchSize);
+
+        return await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private async Task EnsureTableCreatedAsync(CancellationToken ct)

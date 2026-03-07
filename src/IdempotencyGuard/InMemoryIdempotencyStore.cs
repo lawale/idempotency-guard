@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace IdempotencyGuard;
 
-public class InMemoryIdempotencyStore : IIdempotencyStore, IDisposable
+public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyStore, IDisposable
 {
     private readonly ConcurrentDictionary<string, IdempotencyEntry> _entries = new();
     private readonly Timer _cleanupTimer;
@@ -118,18 +118,28 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IDisposable
     public IdempotencyState? GetState(string key) =>
         _entries.TryGetValue(key, out var entry) ? entry.State : null;
 
-    private void CleanupExpiredEntries()
+    public Task<int> PurgeExpiredAsync(int batchSize, CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
         var expiredKeys = _entries
             .Where(kvp => kvp.Value.ExpiresAtUtc < now)
+            .Take(batchSize)
             .Select(kvp => kvp.Key)
             .ToList();
 
+        var count = 0;
         foreach (var key in expiredKeys)
         {
-            _entries.TryRemove(key, out _);
+            if (_entries.TryRemove(key, out _))
+                count++;
         }
+
+        return Task.FromResult(count);
+    }
+
+    private void CleanupExpiredEntries()
+    {
+        PurgeExpiredAsync(int.MaxValue, CancellationToken.None).GetAwaiter().GetResult();
     }
 
     public void Dispose()

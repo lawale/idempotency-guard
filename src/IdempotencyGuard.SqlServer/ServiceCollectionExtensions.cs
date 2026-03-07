@@ -10,6 +10,8 @@ public static class ServiceCollectionExtensions
     {
         services.Configure(configure);
         services.AddSingleton<IIdempotencyStore, SqlServerIdempotencyStore>();
+        services.AddSingleton<IPurgableIdempotencyStore>(sp =>
+            (IPurgableIdempotencyStore)sp.GetRequiredService<IIdempotencyStore>());
         return services;
     }
 }

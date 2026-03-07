@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace IdempotencyGuard.SqlServer;
 
-public class SqlServerIdempotencyStore : IIdempotencyStore
+public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyStore
 {
     private readonly string _connectionString;
     private readonly SqlServerIdempotencyOptions _options;
@@ -289,6 +289,21 @@ public class SqlServerIdempotencyStore : IIdempotencyStore
             State = IdempotencyState.Claimed,
             ClaimedAtUtc = now
         });
+    }
+
+    public async Task<int> PurgeExpiredAsync(int batchSize, CancellationToken ct = default)
+    {
+        await EnsureTableCreatedAsync(ct);
+
+        await using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE TOP (@batchSize) FROM {FullTableName} WHERE ExpiresAtUtc < @now";
+        cmd.Parameters.AddWithValue("@batchSize", batchSize);
+        cmd.Parameters.AddWithValue("@now", DateTime.UtcNow);
+
+        return await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private async Task EnsureTableCreatedAsync(CancellationToken ct)
