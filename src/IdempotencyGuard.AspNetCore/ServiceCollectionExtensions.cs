@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -19,6 +20,18 @@ public static class ServiceCollectionExtensions
         }
 
         services.TryAddSingleton<IDownstreamKeyGenerator, DefaultDownstreamKeyGenerator>();
+        services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+        services.TryAddScoped<IIdempotencyContext>(sp =>
+        {
+            var httpContext = sp.GetRequiredService<IHttpContextAccessor>().HttpContext;
+            if (httpContext?.Items.TryGetValue("IdempotencyContext", out var ctx) == true
+                && ctx is IIdempotencyContext idempotencyContext)
+            {
+                return idempotencyContext;
+            }
+
+            return NullIdempotencyContext.Instance;
+        });
 
         return services;
     }
