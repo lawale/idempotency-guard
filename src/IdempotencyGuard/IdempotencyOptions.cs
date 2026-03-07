@@ -18,6 +18,20 @@ public class IdempotencyOptions
 
     public int MaxResponseBodySize { get; set; } = 1_048_576;
 
+    /// <summary>
+    /// Maximum number of request body bytes used for fingerprint hashing.
+    /// Bodies larger than this are fingerprinted using only the first N bytes.
+    /// Default: 1 MB. Set to 0 to skip body hashing entirely.
+    /// </summary>
+    public int MaxFingerprintBodySize { get; set; } = 1_048_576;
+
+    /// <summary>
+    /// Prefix prepended to every idempotency key before it is passed to the store.
+    /// Use this to namespace keys by environment or tenant (e.g. <c>"staging:"</c>, <c>"tenant-42:"</c>).
+    /// Default: <c>null</c> (no prefix). Applied across all store implementations.
+    /// </summary>
+    public string? KeyPrefix { get; set; }
+
     public bool Enabled { get; set; } = true;
 
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
