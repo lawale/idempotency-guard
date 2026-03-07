@@ -40,6 +40,11 @@ public class IdempotencyOptions
     /// Overrides <see cref="HeaderDenyList"/> and the built-in defaults entirely.
     /// </summary>
     public HashSet<string>? HeaderAllowList { get; set; }
+
+    /// <summary>
+    /// Configuration for the background expired-entry cleanup service.
+    /// </summary>
+    public CleanupOptions Cleanup { get; set; } = new();
 }
 
 public static class HeaderFilter
@@ -119,4 +124,33 @@ public class IdempotencyProblem
     public required IdempotencyErrorKind Kind { get; init; }
     public required string Message { get; init; }
     public string? IdempotencyKey { get; init; }
+}
+
+/// <summary>
+/// Options for the background expired-entry cleanup service.
+/// </summary>
+public class CleanupOptions
+{
+    /// <summary>
+    /// Whether the background cleanup hosted service is enabled. Default: <c>true</c>.
+    /// Set to <c>false</c> to disable automatic cleanup (e.g. if using an external scheduler
+    /// or calling <see cref="IPurgableIdempotencyStore.PurgeExpiredAsync"/> directly).
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Time between cleanup sweeps. Default: 5 minutes.
+    /// </summary>
+    public TimeSpan Interval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Maximum entries to delete per database round-trip. Default: 1000.
+    /// </summary>
+    public int BatchSize { get; set; } = 1_000;
+
+    /// <summary>
+    /// Maximum batch iterations per sweep to prevent runaway loops. Default: 100.
+    /// After this many iterations the sweep yields until the next interval.
+    /// </summary>
+    public int MaxIterationsPerSweep { get; set; } = 100;
 }
