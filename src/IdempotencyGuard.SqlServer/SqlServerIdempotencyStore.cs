@@ -77,10 +77,11 @@ public class SqlServerIdempotencyStore : IIdempotencyStore
         var state = reader.GetString(reader.GetOrdinal("State"));
         var existingExpiresAt = reader.GetDateTime(reader.GetOrdinal("ExpiresAtUtc"));
 
-        if (state == "claimed" && existingExpiresAt < now)
+        // Handle expired entries — treat as if the key doesn't exist
+        if (existingExpiresAt < now)
         {
             await reader.CloseAsync();
-            return await ReclaimExpiredAsync(conn, key, requestFingerprint, claimTtl, ct);
+            return await ReclaimExpiredAsync(conn, key, requestFingerprint, state, claimTtl, ct);
         }
 
         if (existingFingerprint != requestFingerprint)
@@ -176,7 +177,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore
     }
 
     private async Task<ClaimResult> ReclaimExpiredAsync(
-        SqlConnection conn, string key, string fingerprint, TimeSpan claimTtl, CancellationToken ct)
+        SqlConnection conn, string key, string fingerprint, string previousState, TimeSpan claimTtl, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
 
@@ -187,10 +188,11 @@ public class SqlServerIdempotencyStore : IIdempotencyStore
                 ClaimedAtUtc = @now, ExpiresAtUtc = @expires,
                 CompletedAtUtc = NULL, StatusCode = NULL,
                 HeadersJson = NULL, ResponseBody = NULL
-            WHERE [Key] = @key AND State = 'claimed' AND ExpiresAtUtc < @now";
+            WHERE [Key] = @key AND State = @previous_state AND ExpiresAtUtc < @now";
 
         cmd.Parameters.AddWithValue("@key", key);
         cmd.Parameters.AddWithValue("@fingerprint", fingerprint);
+        cmd.Parameters.AddWithValue("@previous_state", previousState);
         cmd.Parameters.AddWithValue("@now", now);
         cmd.Parameters.AddWithValue("@expires", now.Add(claimTtl));
 
@@ -201,6 +203,85 @@ public class SqlServerIdempotencyStore : IIdempotencyStore
             return new ClaimResult.Claimed();
         }
 
+        // Someone else reclaimed it between our read and update — re-read to check fingerprint
+        await using var readCmd = conn.CreateCommand();
+        readCmd.CommandText = $"SELECT Fingerprint, State FROM {FullTableName} WHERE [Key] = @key";
+        readCmd.Parameters.AddWithValue("@key", key);
+
+        await using var reader = await readCmd.ExecuteReaderAsync(ct);
+        if (await reader.ReadAsync(ct))
+        {
+            var winnerFingerprint = reader.GetString(0);
+            var winnerState = reader.GetString(1);
+
+            if (winnerFingerprint != fingerprint)
+            {
+                return new ClaimResult.FingerprintMismatch(winnerFingerprint, fingerprint);
+            }
+
+            var entry = new IdempotencyEntry
+            {
+                Key = key,
+                RequestFingerprint = winnerFingerprint,
+                State = winnerState == "completed" ? IdempotencyState.Completed : IdempotencyState.Claimed,
+                ClaimedAtUtc = now
+            };
+
+            return winnerState == "completed"
+                ? new ClaimResult.Completed(entry)
+                : new ClaimResult.AlreadyClaimed(entry);
+        }
+
+        // Key was deleted between our update attempt and re-read — insert a fresh claim
+        await using var insertCmd = conn.CreateCommand();
+        insertCmd.CommandText = $@"
+            MERGE {FullTableName} WITH (HOLDLOCK) AS target
+            USING (SELECT @key AS [Key]) AS source
+            ON target.[Key] = source.[Key]
+            WHEN NOT MATCHED THEN
+                INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc)
+                VALUES (@key, @fingerprint, 'claimed', @now, @expires);";
+        insertCmd.Parameters.AddWithValue("@key", key);
+        insertCmd.Parameters.AddWithValue("@fingerprint", fingerprint);
+        insertCmd.Parameters.AddWithValue("@now", now);
+        insertCmd.Parameters.AddWithValue("@expires", now.Add(claimTtl));
+
+        var inserted = await insertCmd.ExecuteNonQueryAsync(ct);
+        if (inserted > 0)
+        {
+            return new ClaimResult.Claimed();
+        }
+
+        // Another request beat us to the insert — re-read to check fingerprint
+        await using var rereadCmd = conn.CreateCommand();
+        rereadCmd.CommandText = $"SELECT Fingerprint, State FROM {FullTableName} WHERE [Key] = @key";
+        rereadCmd.Parameters.AddWithValue("@key", key);
+
+        await using var rereadReader = await rereadCmd.ExecuteReaderAsync(ct);
+        if (await rereadReader.ReadAsync(ct))
+        {
+            var actualFingerprint = rereadReader.GetString(0);
+            var actualState = rereadReader.GetString(1);
+
+            if (actualFingerprint != fingerprint)
+            {
+                return new ClaimResult.FingerprintMismatch(actualFingerprint, fingerprint);
+            }
+
+            var rereadEntry = new IdempotencyEntry
+            {
+                Key = key,
+                RequestFingerprint = actualFingerprint,
+                State = actualState == "completed" ? IdempotencyState.Completed : IdempotencyState.Claimed,
+                ClaimedAtUtc = now
+            };
+
+            return actualState == "completed"
+                ? new ClaimResult.Completed(rereadEntry)
+                : new ClaimResult.AlreadyClaimed(rereadEntry);
+        }
+
+        // Extremely unlikely: key disappeared again — give up with conflict
         return new ClaimResult.AlreadyClaimed(new IdempotencyEntry
         {
             Key = key,

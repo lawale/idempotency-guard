@@ -49,15 +49,20 @@ public class RedisIdempotencyStore : IIdempotencyStore
             return new ClaimResult.Claimed();
         }
 
+        if (existing.State == "completed")
+        {
+            if (existing.Fingerprint != requestFingerprint)
+            {
+                return new ClaimResult.FingerprintMismatch(existing.Fingerprint, requestFingerprint);
+            }
+
+            var entry = ToIdempotencyEntry(key, existing);
+            return new ClaimResult.Completed(entry);
+        }
+
         if (existing.Fingerprint != requestFingerprint)
         {
             return new ClaimResult.FingerprintMismatch(existing.Fingerprint, requestFingerprint);
-        }
-
-        if (existing.State == "completed")
-        {
-            var entry = ToIdempotencyEntry(key, existing);
-            return new ClaimResult.Completed(entry);
         }
 
         var claimedEntry = ToIdempotencyEntry(key, existing);
@@ -76,7 +81,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
         var entry = new RedisEntry
         {
             State = "completed",
-            Fingerprint = "",
+            Fingerprint = "", // Overwritten by complete.lua with the original claim fingerprint
             ClaimedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),
             StatusCode = response.StatusCode,
             Headers = JsonSerializer.Serialize(response.Headers),
