@@ -23,6 +23,13 @@ public class IdempotencyOptions
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
 
     /// <summary>
+    /// Custom error response factory. When set, the middleware calls this to produce the
+    /// JSON body for all error responses (400, 409, 422) instead of the default
+    /// <c>{"error":"..."}</c> format. The returned object is serialized with System.Text.Json.
+    /// </summary>
+    public Func<IdempotencyProblem, object>? ErrorResponseFactory { get; set; }
+
+    /// <summary>
     /// Additional response headers to exclude from storage beyond the built-in defaults
     /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> is set.
     /// </summary>
@@ -96,4 +103,20 @@ public enum MissingKeyPolicy
 {
     Allow,
     Reject
+}
+
+public enum IdempotencyErrorKind
+{
+    MissingKey,
+    FingerprintMismatch,
+    Conflict,
+    Timeout
+}
+
+public class IdempotencyProblem
+{
+    public required int StatusCode { get; init; }
+    public required IdempotencyErrorKind Kind { get; init; }
+    public required string Message { get; init; }
+    public string? IdempotencyKey { get; init; }
 }
