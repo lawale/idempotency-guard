@@ -36,4 +36,13 @@ public static class IdempotencyMetrics
         "idempotency.store.latency",
         unit: "ms",
         description: "Store operation latency");
+
+    public static readonly Counter<long> PurgedTotal = Meter.CreateCounter<long>(
+        "idempotency.purge.total",
+        description: "Total expired entries purged by cleanup");
+
+    public static readonly Histogram<double> PurgeLatency = Meter.CreateHistogram<double>(
+        "idempotency.purge.latency",
+        unit: "ms",
+        description: "Cleanup sweep latency");
 }

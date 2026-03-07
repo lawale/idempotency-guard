@@ -33,6 +33,8 @@ public static class ServiceCollectionExtensions
             return NullIdempotencyContext.Instance;
         });
 
+        services.AddHostedService<IdempotencyCleanupService>();
+
         return services;
     }
 
@@ -40,6 +42,7 @@ public static class ServiceCollectionExtensions
     {
         var store = new InMemoryIdempotencyStore();
         services.AddSingleton<IIdempotencyStore>(store);
+        services.AddSingleton<IPurgableIdempotencyStore>(store);
         services.AddSingleton(store);
         return services;
     }
