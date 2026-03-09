@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - Unreleased
+
+### Added
+- `FingerprintProperties` on `[Idempotent]` attribute for selective property-based fingerprinting via `nameof()` (case-insensitive matching)
+
 ## [1.0.0] - 2026-03-07
 
 ### Added

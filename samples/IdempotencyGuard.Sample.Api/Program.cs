@@ -53,7 +53,9 @@ app.UseIdempotencyGuard();
 
 app.MapGet("/", () => "IdempotencyGuard Sample API — POST to /payments or /refunds with an Idempotency-Key header");
 
-app.MapPost("/payments", (PaymentRequest request) =>
+app.MapPost("/payments", [Idempotent(
+    FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)])]
+(PaymentRequest request) =>
 {
     var payment = new PaymentResponse(
         Id: Guid.NewGuid().ToString("N")[..12],

@@ -50,6 +50,17 @@ public class MiddlewareTests : IAsyncLifetime
                             await context.Response.WriteAsync("""{"id": "pay_123", "status": "created"}""");
                         });
 
+                        endpoints.MapPost("/payments-selective", async context =>
+                        {
+                            Interlocked.Increment(ref _handlerCallCount);
+                            context.Response.StatusCode = 201;
+                            context.Response.ContentType = "application/json";
+                            await context.Response.WriteAsync("""{"id": "pay_456", "status": "created"}""");
+                        }).WithMetadata(new IdempotentAttribute
+                        {
+                            FingerprintProperties = ["Amount", "Currency"]
+                        });
+
                         endpoints.MapGet("/health", async context =>
                         {
                             context.Response.StatusCode = 200;
@@ -152,9 +163,66 @@ public class MiddlewareTests : IAsyncLifetime
         _handlerCallCount.Should().Be(2);
     }
 
+    [Fact]
+    public async Task Selective_fingerprint_same_key_different_non_fingerprint_fields_replays()
+    {
+        var request1 = CreateRequest("/payments-selective", "key-fp-1",
+            """{"amount": 100, "currency": "USD", "description": "first"}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-selective", "key-fp-1",
+            """{"amount": 100, "currency": "USD", "description": "second"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Selective_fingerprint_same_key_different_fingerprint_fields_returns_422()
+    {
+        var request1 = CreateRequest("/payments-selective", "key-fp-2",
+            """{"amount": 100, "currency": "USD", "description": "first"}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-selective", "key-fp-2",
+            """{"amount": 200, "currency": "USD", "description": "first"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Selective_fingerprint_case_insensitive_property_matching()
+    {
+        var request1 = CreateRequest("/payments-selective", "key-fp-3",
+            """{"amount": 500, "currency": "GBP", "description": "A"}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-selective", "key-fp-3",
+            """{"amount": 500, "currency": "GBP", "description": "B"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
     private static HttpRequestMessage CreatePaymentRequest(string idempotencyKey, string body)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/payments")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("Idempotency-Key", idempotencyKey);
+        return request;
+    }
+
+    private static HttpRequestMessage CreateRequest(string path, string idempotencyKey, string body)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json")
         };

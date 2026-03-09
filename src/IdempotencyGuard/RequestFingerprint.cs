@@ -25,6 +25,37 @@ public static class RequestFingerprint
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    public static byte[]? ExtractProperties(byte[]? body, string[] propertyNames)
+    {
+        if (body is not { Length: > 0 } || propertyNames.Length == 0)
+            return body;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return body;
+
+            var propertySet = new HashSet<string>(propertyNames, StringComparer.OrdinalIgnoreCase);
+
+            var filtered = doc.RootElement
+                .EnumerateObject()
+                .Where(p => propertySet.Contains(p.Name))
+                .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(p => p.Name, p => SortProperties(p.Value));
+
+            if (filtered.Count == 0)
+                return body;
+
+            return JsonSerializer.SerializeToUtf8Bytes(filtered);
+        }
+        catch (JsonException)
+        {
+            return body;
+        }
+    }
+
     private static byte[] NormaliseJsonBody(byte[] body)
     {
         try
