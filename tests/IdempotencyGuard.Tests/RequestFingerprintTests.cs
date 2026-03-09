@@ -125,4 +125,142 @@ public class RequestFingerprintTests
 
         hash1.Should().Be(hash2);
     }
+
+    [Fact]
+    public void ExtractProperties_filters_to_specified_properties()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD", "description": "test"}""");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, ["amount", "currency"]);
+
+        var json = Encoding.UTF8.GetString(filtered!);
+        json.Should().Contain("amount");
+        json.Should().Contain("currency");
+        json.Should().NotContain("description");
+    }
+
+    [Fact]
+    public void ExtractProperties_is_case_insensitive()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD"}""");
+
+        var filteredLower = RequestFingerprint.ExtractProperties(body, ["amount", "currency"]);
+        var filteredUpper = RequestFingerprint.ExtractProperties(body, ["Amount", "Currency"]);
+
+        filteredLower.Should().BeEquivalentTo(filteredUpper);
+    }
+
+    [Fact]
+    public void ExtractProperties_with_missing_property_skips_it()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD"}""");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, ["amount", "nonexistent"]);
+
+        var json = Encoding.UTF8.GetString(filtered!);
+        json.Should().Contain("amount");
+        json.Should().NotContain("nonexistent");
+    }
+
+    [Fact]
+    public void ExtractProperties_with_no_matching_properties_returns_original_body()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD"}""");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, ["nonexistent"]);
+
+        filtered.Should().BeEquivalentTo(body);
+    }
+
+    [Fact]
+    public void ExtractProperties_with_non_json_body_returns_original_body()
+    {
+        var body = Encoding.UTF8.GetBytes("plain text body");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, ["amount"]);
+
+        filtered.Should().BeEquivalentTo(body);
+    }
+
+    [Fact]
+    public void ExtractProperties_with_null_body_returns_null()
+    {
+        var filtered = RequestFingerprint.ExtractProperties(null, ["amount"]);
+
+        filtered.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractProperties_with_empty_property_names_returns_original_body()
+    {
+        var body = Encoding.UTF8.GetBytes("""{"amount": 100}""");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, []);
+
+        filtered.Should().BeEquivalentTo(body);
+    }
+
+    [Fact]
+    public void ExtractProperties_with_json_array_body_returns_original_body()
+    {
+        var body = Encoding.UTF8.GetBytes("""[{"amount": 100}]""");
+
+        var filtered = RequestFingerprint.ExtractProperties(body, ["amount"]);
+
+        filtered.Should().BeEquivalentTo(body);
+    }
+
+    [Fact]
+    public void ExtractProperties_produces_deterministic_output_regardless_of_property_order()
+    {
+        var body1 = Encoding.UTF8.GetBytes(
+            """{"currency": "USD", "amount": 100, "description": "test"}""");
+        var body2 = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "description": "test", "currency": "USD"}""");
+
+        var filtered1 = RequestFingerprint.ExtractProperties(body1, ["amount", "currency"]);
+        var filtered2 = RequestFingerprint.ExtractProperties(body2, ["amount", "currency"]);
+
+        filtered1.Should().BeEquivalentTo(filtered2);
+    }
+
+    [Fact]
+    public void Compute_with_extracted_properties_ignores_non_fingerprint_fields()
+    {
+        var body1 = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD", "timestamp": "2024-01-01"}""");
+        var body2 = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD", "timestamp": "2024-06-15"}""");
+
+        var props = new[] { "amount", "currency" };
+        var filtered1 = RequestFingerprint.ExtractProperties(body1, props);
+        var filtered2 = RequestFingerprint.ExtractProperties(body2, props);
+
+        var hash1 = RequestFingerprint.Compute("POST", "/payments", filtered1);
+        var hash2 = RequestFingerprint.Compute("POST", "/payments", filtered2);
+
+        hash1.Should().Be(hash2);
+    }
+
+    [Fact]
+    public void Compute_with_extracted_properties_differs_when_fingerprint_fields_differ()
+    {
+        var body1 = Encoding.UTF8.GetBytes(
+            """{"amount": 100, "currency": "USD", "description": "same"}""");
+        var body2 = Encoding.UTF8.GetBytes(
+            """{"amount": 200, "currency": "USD", "description": "same"}""");
+
+        var props = new[] { "amount", "currency" };
+        var filtered1 = RequestFingerprint.ExtractProperties(body1, props);
+        var filtered2 = RequestFingerprint.ExtractProperties(body2, props);
+
+        var hash1 = RequestFingerprint.Compute("POST", "/payments", filtered1);
+        var hash2 = RequestFingerprint.Compute("POST", "/payments", filtered2);
+
+        hash1.Should().NotBe(hash2);
+    }
 }

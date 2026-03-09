@@ -97,6 +97,10 @@ public class IdempotencyMiddleware
             && requestBody.Length > _options.MaxFingerprintBodySize
                 ? requestBody[.._options.MaxFingerprintBodySize]
                 : (_options.MaxFingerprintBodySize == 0 ? null : requestBody);
+
+        if (idempotentAttr?.FingerprintProperties is { Length: > 0 } fingerprintProperties)
+            fingerprintBody = RequestFingerprint.ExtractProperties(fingerprintBody, fingerprintProperties);
+
         var fingerprint = RequestFingerprint.Compute(
             httpContext.Request.Method,
             httpContext.Request.Path.Value ?? "/",
