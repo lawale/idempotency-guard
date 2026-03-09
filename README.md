@@ -147,6 +147,23 @@ app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds =
 });
 ```
 
+### Selective Fingerprinting
+
+By default, the middleware fingerprints the entire request body. If your requests contain fields that may legitimately differ across retries (timestamps, correlation IDs, descriptions), you can specify which properties define request identity:
+
+```csharp
+app.MapPost("/payments", [Idempotent(
+    FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)])]
+(PaymentRequest request) =>
+{
+    // Only Amount and Currency are used for fingerprinting.
+    // Different Description values with the same key will replay, not 422.
+    return Results.Created($"/payments/{id}", result);
+});
+```
+
+Property matching is case-insensitive — `nameof(PaymentRequest.Amount)` (`"Amount"`) matches the JSON key `"amount"` regardless of serializer casing. When `FingerprintProperties` is not set, the entire body is used (default behaviour).
+
 ## Error Response Customisation
 
 By default, the middleware returns errors in a simple `{"error":"..."}` format. Use `ErrorResponseFactory` to customise error responses — for example, to match [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807) or your API's existing error contract:
