@@ -26,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Determine version
         run: |
@@ -34,6 +36,17 @@ jobs:
           else
             TAG="${GITHUB_REF#refs/tags/v}"
             echo "VERSION=$TAG" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout release tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="v$VERSION"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Checking out existing tag $TAG"
+            git checkout "$TAG"
+          else
+            echo "Tag $TAG does not exist yet, building from current ref"
           fi
 
       - name: Setup .NET
