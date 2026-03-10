@@ -164,6 +164,26 @@ app.MapPost("/payments", [Idempotent(
 
 Property matching is case-insensitive — `nameof(PaymentRequest.Amount)` (`"Amount"`) matches the JSON key `"amount"` regardless of serializer casing. When `FingerprintProperties` is not set, the entire body is used (default behaviour).
 
+You can also include query parameters and route values in the fingerprint:
+
+```csharp
+app.MapPost("/merchants/{merchantId}/payments", [Idempotent(
+    FingerprintProperties = [nameof(PaymentRequest.Amount)],
+    FingerprintQueryParameters = ["version"],
+    FingerprintRouteValues = ["merchantId"])]
+(string merchantId, PaymentRequest request) =>
+{
+    // Fingerprint includes: Amount (body) + version (query) + merchantId (route)
+    return Results.Created($"/payments/{id}", result);
+});
+```
+
+| Property | Source | Matching |
+|----------|--------|----------|
+| `FingerprintProperties` | JSON body (top-level) | Case-insensitive, supports `nameof()` |
+| `FingerprintQueryParameters` | Query string (`?key=value`) | Case-insensitive |
+| `FingerprintRouteValues` | Route parameters (`{id}`) | Case-insensitive |
+
 ## Error Response Customisation
 
 By default, the middleware returns errors in a simple `{"error":"..."}` format. Use `ErrorResponseFactory` to customise error responses — for example, to match [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807) or your API's existing error contract:
