@@ -72,7 +72,7 @@ public class InMemoryIdempotencyStoreTests : IDisposable
 
         retrieved.Should().NotBeNull();
         retrieved!.StatusCode.Should().Be(200);
-        Encoding.UTF8.GetString(retrieved.Body).Should().Be("""{"id": "pay_123"}""");
+        Encoding.UTF8.GetString(retrieved.Body.Span).Should().Be("""{"id": "pay_123"}""");
     }
 
     [Fact]
