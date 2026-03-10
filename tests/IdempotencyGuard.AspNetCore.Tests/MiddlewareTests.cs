@@ -83,6 +83,25 @@ public class MiddlewareTests : IAsyncLifetime
                             FingerprintRouteValues = ["merchantId"]
                         });
 
+                        endpoints.MapPost("/payments-fluent", async context =>
+                        {
+                            Interlocked.Increment(ref _handlerCallCount);
+                            context.Response.StatusCode = 201;
+                            context.Response.ContentType = "application/json";
+                            await context.Response.WriteAsync("""{"id": "pay_fluent", "status": "created"}""");
+                        }).RequireIdempotency(options =>
+                        {
+                            options.FingerprintProperties = ["Amount", "Currency"];
+                        });
+
+                        endpoints.MapPost("/payments-fluent-default", async context =>
+                        {
+                            Interlocked.Increment(ref _handlerCallCount);
+                            context.Response.StatusCode = 201;
+                            context.Response.ContentType = "application/json";
+                            await context.Response.WriteAsync("""{"id": "pay_fluent_def", "status": "created"}""");
+                        }).RequireIdempotency();
+
                         endpoints.MapGet("/health", async context =>
                         {
                             context.Response.StatusCode = 200;
@@ -286,6 +305,53 @@ public class MiddlewareTests : IAsyncLifetime
         await _client!.SendAsync(request1);
 
         var request2 = CreateRequest("/merchants/42/payments", "key-rv-2",
+            """{"amount": 100}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RequireIdempotency_with_selective_fingerprint_replays_on_non_fingerprint_change()
+    {
+        var request1 = CreateRequest("/payments-fluent", "key-fluent-1",
+            """{"amount": 100, "currency": "USD", "description": "first"}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-fluent", "key-fluent-1",
+            """{"amount": 100, "currency": "USD", "description": "second"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RequireIdempotency_with_selective_fingerprint_returns_422_on_fingerprint_change()
+    {
+        var request1 = CreateRequest("/payments-fluent", "key-fluent-2",
+            """{"amount": 100, "currency": "USD"}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-fluent", "key-fluent-2",
+            """{"amount": 200, "currency": "USD"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RequireIdempotency_default_replays_duplicate_request()
+    {
+        var request1 = CreateRequest("/payments-fluent-default", "key-fluent-def-1",
+            """{"amount": 100}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-fluent-default", "key-fluent-def-1",
             """{"amount": 100}""");
         var response = await _client.SendAsync(request2);
 
