@@ -137,14 +137,24 @@ builder.Services.AddIdempotencyGuard(options =>
 
 ### Per-Endpoint Configuration
 
-Use the `[Idempotent]` attribute to override TTLs or require keys on specific endpoints:
+Use the `RequireIdempotency()` extension method to override TTLs or require keys on specific endpoints:
 
 ```csharp
-app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
-    (PaymentRequest request) =>
+app.MapPost("/payments", (PaymentRequest request) =>
 {
     // ...
+}).RequireIdempotency(options =>
+{
+    options.ClaimTtlSeconds = 120;
+    options.ResponseTtlSeconds = 86400;
 });
+```
+
+Or use the `[Idempotent]` attribute for controller-based APIs:
+
+```csharp
+[Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
+public IActionResult CreatePayment(PaymentRequest request) { ... }
 ```
 
 ### Selective Fingerprinting
@@ -152,13 +162,14 @@ app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds =
 By default, the middleware fingerprints the entire request body. If your requests contain fields that may legitimately differ across retries (timestamps, correlation IDs, descriptions), you can specify which properties define request identity:
 
 ```csharp
-app.MapPost("/payments", [Idempotent(
-    FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)])]
-(PaymentRequest request) =>
+app.MapPost("/payments", (PaymentRequest request) =>
 {
     // Only Amount and Currency are used for fingerprinting.
     // Different Description values with the same key will replay, not 422.
     return Results.Created($"/payments/{id}", result);
+}).RequireIdempotency(options =>
+{
+    options.FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)];
 });
 ```
 
@@ -167,14 +178,15 @@ Property matching is case-insensitive — `nameof(PaymentRequest.Amount)` (`"Amo
 You can also include query parameters and route values in the fingerprint:
 
 ```csharp
-app.MapPost("/merchants/{merchantId}/payments", [Idempotent(
-    FingerprintProperties = [nameof(PaymentRequest.Amount)],
-    FingerprintQueryParameters = ["version"],
-    FingerprintRouteValues = ["merchantId"])]
-(string merchantId, PaymentRequest request) =>
+app.MapPost("/merchants/{merchantId}/payments", (string merchantId, PaymentRequest request) =>
 {
     // Fingerprint includes: Amount (body) + version (query) + merchantId (route)
     return Results.Created($"/payments/{id}", result);
+}).RequireIdempotency(options =>
+{
+    options.FingerprintProperties = [nameof(PaymentRequest.Amount)];
+    options.FingerprintQueryParameters = ["version"];
+    options.FingerprintRouteValues = ["merchantId"];
 });
 ```
 

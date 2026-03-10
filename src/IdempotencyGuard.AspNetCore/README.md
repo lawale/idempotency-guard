@@ -48,12 +48,24 @@ Request with Idempotency-Key header
 
 ## Per-Endpoint Configuration
 
+Use `RequireIdempotency()` for minimal APIs:
+
 ```csharp
-app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
-(PaymentRequest request) =>
+app.MapPost("/payments", (PaymentRequest request) =>
 {
     // Per-endpoint TTL overrides
+}).RequireIdempotency(options =>
+{
+    options.ClaimTtlSeconds = 120;
+    options.ResponseTtlSeconds = 86400;
 });
+```
+
+Or use the `[Idempotent]` attribute for controller-based APIs:
+
+```csharp
+[Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
+public IActionResult CreatePayment(PaymentRequest request) { ... }
 ```
 
 ## Selective Fingerprinting
@@ -61,13 +73,14 @@ app.MapPost("/payments", [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds =
 Specify which properties define request identity, so non-business fields (timestamps, correlation IDs) don't cause fingerprint mismatches:
 
 ```csharp
-app.MapPost("/payments", [Idempotent(
-    FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)],
-    FingerprintQueryParameters = ["version"],
-    FingerprintRouteValues = ["merchantId"])]
-(PaymentRequest request) =>
+app.MapPost("/payments", (PaymentRequest request) =>
 {
     // Only specified fields are fingerprinted
+}).RequireIdempotency(options =>
+{
+    options.FingerprintProperties = [nameof(PaymentRequest.Amount), nameof(PaymentRequest.Currency)];
+    options.FingerprintQueryParameters = ["version"];
+    options.FingerprintRouteValues = ["merchantId"];
 });
 ```
 
