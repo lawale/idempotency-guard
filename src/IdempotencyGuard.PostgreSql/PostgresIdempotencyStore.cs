@@ -113,7 +113,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         cmd.Parameters.AddWithValue("expires_at", DateTime.UtcNow.Add(responseTtl));
         cmd.Parameters.AddWithValue("status_code", response.StatusCode);
         cmd.Parameters.AddWithValue("headers", JsonSerializer.Serialize(response.Headers));
-        cmd.Parameters.AddWithValue("body", response.Body);
+        cmd.Parameters.AddWithValue("body", response.Body.ToArray());
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -153,7 +153,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 
         var statusCode = reader.GetInt32(0);
         var headersJson = reader.IsDBNull(1) ? null : reader.GetString(1);
-        var body = reader.IsDBNull(2) ? [] : (byte[])reader[2];
+        ReadOnlyMemory<byte> body = reader.IsDBNull(2) ? default : (byte[])reader[2];
 
         return new IdempotentResponse
         {
@@ -351,7 +351,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 : reader.GetString(reader.GetOrdinal("headers_json")),
             ResponseBody = reader.IsDBNull(reader.GetOrdinal("response_body"))
                 ? null
-                : (byte[])reader[reader.GetOrdinal("response_body")]
+                : (ReadOnlyMemory<byte>)(byte[])reader[reader.GetOrdinal("response_body")]
         };
     }
 }

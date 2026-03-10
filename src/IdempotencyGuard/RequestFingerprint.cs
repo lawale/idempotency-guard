@@ -6,7 +6,7 @@ namespace IdempotencyGuard;
 
 public static class RequestFingerprint
 {
-    public static string Compute(string httpMethod, string path, byte[]? body)
+    public static string Compute(string httpMethod, string path, byte[]? body, string? extraFingerprint = null)
     {
         using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
@@ -19,6 +19,12 @@ public static class RequestFingerprint
             sha256.AppendData(Encoding.UTF8.GetBytes(":"));
             var normalised = NormaliseJsonBody(body);
             sha256.AppendData(normalised);
+        }
+
+        if (!string.IsNullOrEmpty(extraFingerprint))
+        {
+            sha256.AppendData(Encoding.UTF8.GetBytes(":"));
+            sha256.AppendData(Encoding.UTF8.GetBytes(extraFingerprint));
         }
 
         var hash = sha256.GetHashAndReset();

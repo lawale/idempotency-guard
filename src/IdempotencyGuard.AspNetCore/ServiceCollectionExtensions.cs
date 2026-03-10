@@ -20,6 +20,8 @@ public static class ServiceCollectionExtensions
         }
 
         services.TryAddSingleton<IDownstreamKeyGenerator, DefaultDownstreamKeyGenerator>();
+        services.TryAddSingleton<IFingerprintBuilder, DefaultFingerprintBuilder>();
+        services.TryAddSingleton<IdempotencyResponseWriter>();
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
         services.TryAddScoped<IIdempotencyContext>(sp =>
         {

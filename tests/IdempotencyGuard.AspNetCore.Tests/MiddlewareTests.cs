@@ -61,6 +61,28 @@ public class MiddlewareTests : IAsyncLifetime
                             FingerprintProperties = ["Amount", "Currency"]
                         });
 
+                        endpoints.MapPost("/payments-query", async context =>
+                        {
+                            Interlocked.Increment(ref _handlerCallCount);
+                            context.Response.StatusCode = 201;
+                            context.Response.ContentType = "application/json";
+                            await context.Response.WriteAsync("""{"id": "pay_789", "status": "created"}""");
+                        }).WithMetadata(new IdempotentAttribute
+                        {
+                            FingerprintQueryParameters = ["version"]
+                        });
+
+                        endpoints.MapPost("/merchants/{merchantId}/payments", async context =>
+                        {
+                            Interlocked.Increment(ref _handlerCallCount);
+                            context.Response.StatusCode = 201;
+                            context.Response.ContentType = "application/json";
+                            await context.Response.WriteAsync("""{"id": "pay_route", "status": "created"}""");
+                        }).WithMetadata(new IdempotentAttribute
+                        {
+                            FingerprintRouteValues = ["merchantId"]
+                        });
+
                         endpoints.MapGet("/health", async context =>
                         {
                             context.Response.StatusCode = 200;
@@ -203,6 +225,68 @@ public class MiddlewareTests : IAsyncLifetime
 
         var request2 = CreateRequest("/payments-selective", "key-fp-3",
             """{"amount": 500, "currency": "GBP", "description": "B"}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Query_parameter_fingerprint_same_key_different_query_value_returns_422()
+    {
+        var request1 = CreateRequest("/payments-query?version=1", "key-qp-1",
+            """{"amount": 100}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-query?version=2", "key-qp-1",
+            """{"amount": 100}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Query_parameter_fingerprint_same_key_same_query_value_replays()
+    {
+        var request1 = CreateRequest("/payments-query?version=1", "key-qp-2",
+            """{"amount": 100}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/payments-query?version=1", "key-qp-2",
+            """{"amount": 100}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        response.Headers.GetValues("X-Idempotent-Replayed").Should().Contain("true");
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Route_value_fingerprint_same_key_different_route_value_returns_422()
+    {
+        var request1 = CreateRequest("/merchants/42/payments", "key-rv-1",
+            """{"amount": 100}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/merchants/99/payments", "key-rv-1",
+            """{"amount": 100}""");
+        var response = await _client.SendAsync(request2);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        _handlerCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Route_value_fingerprint_same_key_same_route_value_replays()
+    {
+        var request1 = CreateRequest("/merchants/42/payments", "key-rv-2",
+            """{"amount": 100}""");
+        await _client!.SendAsync(request1);
+
+        var request2 = CreateRequest("/merchants/42/payments", "key-rv-2",
+            """{"amount": 100}""");
         var response = await _client.SendAsync(request2);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);

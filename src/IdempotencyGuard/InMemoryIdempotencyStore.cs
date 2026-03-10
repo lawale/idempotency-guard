@@ -107,7 +107,7 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             Headers = entry.ResponseHeaders is not null
                 ? JsonSerializer.Deserialize<Dictionary<string, string[]>>(entry.ResponseHeaders)!
                 : new Dictionary<string, string[]>(),
-            Body = entry.ResponseBody ?? []
+            Body = entry.ResponseBody.GetValueOrDefault()
         };
 
         return Task.FromResult<IdempotentResponse?>(response);
