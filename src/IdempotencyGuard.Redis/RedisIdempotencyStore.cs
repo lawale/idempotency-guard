@@ -85,7 +85,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
             ClaimedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),
             StatusCode = response.StatusCode,
             Headers = JsonSerializer.Serialize(response.Headers),
-            Body = Convert.ToBase64String(response.Body)
+            Body = Convert.ToBase64String(response.Body.Span)
         };
 
         var json = JsonSerializer.Serialize(entry);
@@ -130,7 +130,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
             Headers = entry.Headers is not null
                 ? JsonSerializer.Deserialize<Dictionary<string, string[]>>(entry.Headers)!
                 : new Dictionary<string, string[]>(),
-            Body = entry.Body is not null ? Convert.FromBase64String(entry.Body) : []
+            Body = entry.Body is not null ? Convert.FromBase64String(entry.Body) : default
         };
     }
 
@@ -146,7 +146,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
                 : DateTime.UtcNow,
             StatusCode = redis.StatusCode,
             ResponseHeaders = redis.Headers,
-            ResponseBody = redis.Body is not null ? Convert.FromBase64String(redis.Body) : null
+            ResponseBody = redis.Body is not null ? (ReadOnlyMemory<byte>)Convert.FromBase64String(redis.Body) : null
         };
     }
 
