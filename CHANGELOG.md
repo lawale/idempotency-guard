@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.1.0] - Unreleased
+## [1.2.0] - 2026-03-10
+
+### Added
+- `FingerprintQueryParameters` on `[Idempotent]` attribute to include query string values in the fingerprint
+- `FingerprintRouteValues` on `[Idempotent]` attribute to include route parameter values in the fingerprint
+
+## [1.1.0] - 2026-03-09
 
 ### Added
 - `FingerprintProperties` on `[Idempotent]` attribute for selective property-based fingerprinting via `nameof()` (case-insensitive matching)

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using IdempotencyGuard.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -14,30 +13,30 @@ public class IdempotencyMiddleware
     private readonly IDownstreamKeyGenerator _keyGenerator;
     private readonly IdempotencyOptions _options;
     private readonly ILogger<IdempotencyMiddleware> _logger;
+    private readonly IFingerprintBuilder _fingerprintBuilder;
+    private readonly IdempotencyResponseWriter _responseWriter;
 
     public IdempotencyMiddleware(
         RequestDelegate next,
         IIdempotencyStore store,
         IDownstreamKeyGenerator keyGenerator,
         IOptions<IdempotencyOptions> options,
-        ILogger<IdempotencyMiddleware> logger)
+        ILogger<IdempotencyMiddleware> logger,
+        IFingerprintBuilder fingerprintBuilder,
+        IdempotencyResponseWriter responseWriter)
     {
         _next = next;
         _store = store;
         _keyGenerator = keyGenerator;
         _options = options.Value;
         _logger = logger;
+        _fingerprintBuilder = fingerprintBuilder;
+        _responseWriter = responseWriter;
     }
 
     public async Task InvokeAsync(HttpContext httpContext)
     {
-        if (!_options.Enabled)
-        {
-            await _next(httpContext);
-            return;
-        }
-
-        if (!_options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase))
+        if (!IsEnabled(httpContext))
         {
             await _next(httpContext);
             return;
@@ -67,7 +66,7 @@ public class IdempotencyMiddleware
 
             if (requireKey)
             {
-                await WriteErrorResponseAsync(httpContext, 400, IdempotencyErrorKind.MissingKey,
+                await _responseWriter.WriteErrorAsync(httpContext, 400, IdempotencyErrorKind.MissingKey,
                     $"Missing required header: {_options.HeaderName}");
                 return;
             }
@@ -91,30 +90,17 @@ public class IdempotencyMiddleware
 
         IdempotencyMetrics.RequestsTotal.Add(1);
 
-        var requestBody = await ReadRequestBodyAsync(httpContext.Request);
-        var fingerprintBody = requestBody is not null
-            && _options.MaxFingerprintBodySize > 0
-            && requestBody.Length > _options.MaxFingerprintBodySize
-                ? requestBody[.._options.MaxFingerprintBodySize]
-                : (_options.MaxFingerprintBodySize == 0 ? null : requestBody);
-
-        if (idempotentAttr?.FingerprintProperties is { Length: > 0 } fingerprintProperties)
-            fingerprintBody = RequestFingerprint.ExtractProperties(fingerprintBody, fingerprintProperties);
-
-        var fingerprint = RequestFingerprint.Compute(
-            httpContext.Request.Method,
-            httpContext.Request.Path.Value ?? "/",
-            fingerprintBody);
+        var result = await _fingerprintBuilder.ComputeAsync(httpContext, idempotentAttr);
 
         var claimTs = Stopwatch.GetTimestamp();
-        var claimResult = await _store.TryClaimAsync(idempotencyKey, fingerprint, claimTtl);
+        var claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl);
         RecordStoreLatency(claimTs, "claim");
 
         switch (claimResult)
         {
             case ClaimResult.Claimed:
                 IdempotencyMetrics.ClaimsTotal.Add(1);
-                await HandleNewRequestAsync(httpContext, idempotencyKey, fingerprint, requestBody, responseTtl);
+                await HandleNewRequestAsync(httpContext, idempotencyKey, result.Fingerprint, result.RequestBody, responseTtl);
                 break;
 
             case ClaimResult.Completed completed:
@@ -124,7 +110,7 @@ public class IdempotencyMiddleware
 
             case ClaimResult.AlreadyClaimed:
                 IdempotencyMetrics.ConflictsTotal.Add(1);
-                await HandleConcurrentRequestAsync(httpContext, idempotencyKey, fingerprint);
+                await HandleConcurrentRequestAsync(httpContext, idempotencyKey);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
@@ -132,12 +118,14 @@ public class IdempotencyMiddleware
                 _logger.LogWarning(
                     "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
                     idempotencyKey, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
-                await WriteErrorResponseAsync(httpContext, 422, IdempotencyErrorKind.FingerprintMismatch,
+                await _responseWriter.WriteErrorAsync(httpContext, 422, IdempotencyErrorKind.FingerprintMismatch,
                     "Idempotency key has already been used with a different request payload",
                     idempotencyKey);
                 break;
         }
     }
+
+    private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
 
     private async Task HandleNewRequestAsync(HttpContext httpContext, string key, string fingerprint, byte[]? requestBody, TimeSpan responseTtl)
     {
@@ -155,10 +143,10 @@ public class IdempotencyMiddleware
 
             await _next(httpContext);
 
-            responseBody.Seek(0, SeekOrigin.Begin);
-            var responseBytes = responseBody.ToArray();
+            responseBody.Position = 0;
 
-            if (responseBytes.Length <= _options.MaxResponseBodySize)
+            if (responseBody.TryGetBuffer(out var responseBuffer)
+                && responseBuffer.Count <= _options.MaxResponseBodySize)
             {
                 var headers = new Dictionary<string, string[]>();
                 foreach (var header in httpContext.Response.Headers)
@@ -173,7 +161,7 @@ public class IdempotencyMiddleware
                 {
                     StatusCode = httpContext.Response.StatusCode,
                     Headers = headers,
-                    Body = responseBytes
+                    Body = responseBuffer.AsMemory()
                 };
 
                 var setTs = Stopwatch.GetTimestamp();
@@ -185,7 +173,9 @@ public class IdempotencyMiddleware
                     key, httpContext.Response.StatusCode);
             }
 
-            responseBody.Seek(0, SeekOrigin.Begin);
+            // Write to the original stream directly from the MemoryStream
+            // internal buffer, avoiding an extra array allocation.
+            responseBody.Position = 0;
             await responseBody.CopyToAsync(originalBodyStream);
         }
         catch (Exception ex)
@@ -211,30 +201,21 @@ public class IdempotencyMiddleware
 
         if (response is null)
         {
-            await WriteErrorResponseAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
+            await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request is being processed", key);
             return;
         }
 
         _logger.LogInformation("Replaying idempotent response for key {Key}, original status {StatusCode}", key, response.StatusCode);
 
-        httpContext.Response.StatusCode = response.StatusCode;
-
-        foreach (var header in response.Headers)
-        {
-            httpContext.Response.Headers[header.Key] = header.Value;
-        }
-
-        httpContext.Response.Headers["X-Idempotent-Replayed"] = "true";
-
-        await httpContext.Response.Body.WriteAsync(response.Body);
+        await _responseWriter.ReplayAsync(httpContext, response);
     }
 
-    private async Task HandleConcurrentRequestAsync(HttpContext httpContext, string key, string fingerprint)
+    private async Task HandleConcurrentRequestAsync(HttpContext httpContext, string key)
     {
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
-            await WriteErrorResponseAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
+            await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request with this idempotency key is currently being processed", key);
             return;
         }
@@ -256,45 +237,13 @@ public class IdempotencyMiddleware
                 IdempotencyMetrics.ReplaysTotal.Add(1);
                 _logger.LogInformation("Replaying idempotent response after wait for key {Key}", key);
 
-                httpContext.Response.StatusCode = response.StatusCode;
-                foreach (var header in response.Headers)
-                {
-                    httpContext.Response.Headers[header.Key] = header.Value;
-                }
-                httpContext.Response.Headers["X-Idempotent-Replayed"] = "true";
-
-                await httpContext.Response.Body.WriteAsync(response.Body);
+                await _responseWriter.ReplayAsync(httpContext, response);
                 return;
             }
         }
 
-        await WriteErrorResponseAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
+        await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
             "Timed out waiting for concurrent request to complete", key);
-    }
-
-    private async Task WriteErrorResponseAsync(
-        HttpContext httpContext,
-        int statusCode,
-        IdempotencyErrorKind kind,
-        string message,
-        string? idempotencyKey = null)
-    {
-        httpContext.Response.StatusCode = statusCode;
-        httpContext.Response.ContentType = "application/json";
-
-        var problem = new IdempotencyProblem
-        {
-            StatusCode = statusCode,
-            Kind = kind,
-            Message = message,
-            IdempotencyKey = idempotencyKey
-        };
-
-        var body = _options.ErrorResponseFactory is not null
-            ? _options.ErrorResponseFactory(problem)
-            : new { error = message };
-
-        await httpContext.Response.WriteAsync(JsonSerializer.Serialize(body));
     }
 
     private static void RecordStoreLatency(long startTimestamp, string operation)
@@ -302,21 +251,5 @@ public class IdempotencyMiddleware
         IdempotencyMetrics.StoreLatency.Record(
             Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds,
             new KeyValuePair<string, object?>("operation", operation));
-    }
-
-    private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request)
-    {
-        if (!request.Body.CanSeek)
-        {
-            request.EnableBuffering();
-        }
-
-        using var memoryStream = new MemoryStream();
-        request.Body.Position = 0;
-        await request.Body.CopyToAsync(memoryStream);
-        request.Body.Position = 0;
-
-        var bytes = memoryStream.ToArray();
-        return bytes.Length > 0 ? bytes : null;
     }
 }

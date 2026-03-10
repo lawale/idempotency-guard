@@ -15,4 +15,18 @@ public class IdempotentAttribute : Attribute
     /// When <c>null</c> or empty, the entire request body is used (default behaviour).
     /// </summary>
     public string[]? FingerprintProperties { get; set; }
+
+    /// <summary>
+    /// Query parameter names to include in the request fingerprint.
+    /// Values are matched by exact parameter name (case-insensitive).
+    /// When <c>null</c> or empty, query parameters are not included in the fingerprint (default behaviour).
+    /// </summary>
+    public string[]? FingerprintQueryParameters { get; set; }
+
+    /// <summary>
+    /// Route value names to include in the request fingerprint.
+    /// Values are matched by exact route parameter name (case-insensitive).
+    /// When <c>null</c> or empty, route values are not included in the fingerprint (default behaviour).
+    /// </summary>
+    public string[]? FingerprintRouteValues { get; set; }
 }
