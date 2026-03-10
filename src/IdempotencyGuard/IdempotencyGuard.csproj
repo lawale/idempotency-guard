@@ -2,8 +2,13 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard</PackageId>
-    <Description>Core abstractions and in-memory implementation for idempotent payment API request handling</Description>
-    <PackageTags>idempotency;payments;api;middleware;fintech</PackageTags>
+    <Description>Core abstractions and in-memory store for idempotent HTTP API request handling. Provides fingerprint-based deduplication, claim/response lifecycle, and pluggable store interfaces.</Description>
+    <PackageTags>idempotency;idempotent;api;http;deduplication;retry;middleware;dotnet;aspnetcore</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

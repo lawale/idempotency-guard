@@ -2,9 +2,14 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.AspNetCore</PackageId>
-    <Description>ASP.NET Core middleware and DI extensions for IdempotencyGuard</Description>
-    <PackageTags>idempotency;payments;aspnetcore;middleware;fintech</PackageTags>
+    <Description>ASP.NET Core middleware for automatic idempotent request handling. Provides Idempotency-Key header processing, request fingerprinting, response caching and replay, and per-endpoint configuration via attributes.</Description>
+    <PackageTags>idempotency;idempotent;aspnetcore;middleware;api;http;deduplication;retry;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
