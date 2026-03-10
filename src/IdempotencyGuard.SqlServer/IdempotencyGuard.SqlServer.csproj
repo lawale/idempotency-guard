@@ -2,9 +2,14 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.SqlServer</PackageId>
-    <Description>SQL Server-backed idempotency store using MERGE for IdempotencyGuard</Description>
-    <PackageTags>idempotency;payments;sqlserver;database;fintech</PackageTags>
+    <Description>SQL Server-backed idempotency store using MERGE for IdempotencyGuard. Provides durable claim coordination and response caching with automatic schema provisioning.</Description>
+    <PackageTags>idempotency;idempotent;sqlserver;mssql;database;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" />

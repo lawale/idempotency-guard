@@ -12,10 +12,5 @@
     <RepositoryType>git</RepositoryType>
     <Version>1.0.0</Version>
     <PackageVersion>1.0.0</PackageVersion>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
-
-  <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
-  </ItemGroup>
 </Project>

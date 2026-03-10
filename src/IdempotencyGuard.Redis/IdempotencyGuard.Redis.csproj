@@ -2,9 +2,14 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.Redis</PackageId>
-    <Description>Redis-backed idempotency store with atomic Lua scripts for IdempotencyGuard</Description>
-    <PackageTags>idempotency;payments;redis;distributed;fintech</PackageTags>
+    <Description>Redis-backed idempotency store with atomic Lua scripts for IdempotencyGuard. Provides distributed claim coordination and response caching via StackExchange.Redis.</Description>
+    <PackageTags>idempotency;idempotent;redis;distributed;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="StackExchange.Redis" />
