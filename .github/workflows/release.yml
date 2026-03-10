@@ -47,18 +47,18 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build --no-restore --configuration Release /p:Version=${{ env.VERSION }}
+        run: dotnet build --no-restore --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }}
 
       - name: Test
         run: dotnet test --no-build --configuration Release --verbosity normal
 
       - name: Pack
         run: |
-          dotnet pack src/IdempotencyGuard/IdempotencyGuard.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
-          dotnet pack src/IdempotencyGuard.AspNetCore/IdempotencyGuard.AspNetCore.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
-          dotnet pack src/IdempotencyGuard.Redis/IdempotencyGuard.Redis.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
-          dotnet pack src/IdempotencyGuard.PostgreSql/IdempotencyGuard.PostgreSql.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
-          dotnet pack src/IdempotencyGuard.SqlServer/IdempotencyGuard.SqlServer.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard/IdempotencyGuard.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.AspNetCore/IdempotencyGuard.AspNetCore.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.Redis/IdempotencyGuard.Redis.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.PostgreSql/IdempotencyGuard.PostgreSql.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }} --output ./artifacts
+          dotnet pack src/IdempotencyGuard.SqlServer/IdempotencyGuard.SqlServer.csproj --no-build --configuration Release /p:Version=${{ env.VERSION }} /p:PackageVersion=${{ env.VERSION }} --output ./artifacts
 
       - name: Nuget Login (OIDC)
         id: login

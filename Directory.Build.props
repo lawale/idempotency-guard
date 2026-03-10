@@ -11,6 +11,5 @@
     <RepositoryUrl>https://github.com/lawale/idempotency-guard</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <Version>1.0.0</Version>
-    <PackageVersion>1.0.0</PackageVersion>
   </PropertyGroup>
 </Project>
