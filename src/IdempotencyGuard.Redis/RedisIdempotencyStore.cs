@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
@@ -167,11 +168,22 @@ public class RedisIdempotencyStore : IIdempotencyStore
 
     private class RedisEntry
     {
+        [JsonPropertyName("state")]
         public string State { get; set; } = "";
+
+        [JsonPropertyName("fingerprint")]
         public string Fingerprint { get; set; } = "";
+
+        [JsonPropertyName("claimed_at")]
         public string ClaimedAt { get; set; } = "";
+
+        [JsonPropertyName("status_code")]
         public int StatusCode { get; set; }
+
+        [JsonPropertyName("headers")]
         public string? Headers { get; set; }
+
+        [JsonPropertyName("body")]
         public string? Body { get; set; }
     }
 }
