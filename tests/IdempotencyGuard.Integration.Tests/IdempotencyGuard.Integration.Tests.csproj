@@ -10,13 +10,17 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="FluentAssertions" />
-    <PackageReference Include="NSubstitute" />
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Testcontainers" />
+    <PackageReference Include="Testcontainers.Redis" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Testcontainers.MsSql" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\IdempotencyGuard.AspNetCore\IdempotencyGuard.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\IdempotencyGuard\IdempotencyGuard.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.Redis\IdempotencyGuard.Redis.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.PostgreSql\IdempotencyGuard.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.SqlServer\IdempotencyGuard.SqlServer.csproj" />
   </ItemGroup>
 
 </Project>

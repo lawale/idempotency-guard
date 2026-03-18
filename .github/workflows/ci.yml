@@ -19,6 +19,7 @@ jobs:
           dotnet-version: |
             8.0.x
             9.0.x
+            10.0.x
 
       - name: Restore dependencies
         run: dotnet restore
@@ -26,8 +27,13 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      - name: Test
-        run: dotnet test --no-build --configuration Release --verbosity normal
+      - name: Unit Tests
+        run: |
+          dotnet test tests/IdempotencyGuard.Tests/ --no-build --configuration Release --verbosity normal
+          dotnet test tests/IdempotencyGuard.AspNetCore.Tests/ --no-build --configuration Release --verbosity normal
+
+      - name: Integration Tests
+        run: dotnet test tests/IdempotencyGuard.Integration.Tests/ --no-build --configuration Release --verbosity normal
 
       - name: Pack (verify packages build)
         run: |
