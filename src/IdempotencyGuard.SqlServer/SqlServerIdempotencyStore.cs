@@ -40,19 +40,12 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             WHEN NOT MATCHED THEN
                 INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc)
                 VALUES (@key, @fingerprint, 'claimed', @now, @expires)
+            WHEN MATCHED THEN
+                UPDATE SET ClaimedAtUtc = target.ClaimedAtUtc
             OUTPUT $action AS MergeAction,
                    inserted.[Key], inserted.Fingerprint, inserted.State,
                    inserted.ClaimedAtUtc, inserted.CompletedAtUtc, inserted.ExpiresAtUtc,
-                   inserted.StatusCode, inserted.HeadersJson, inserted.ResponseBody;
-
-            IF @@ROWCOUNT = 0
-            BEGIN
-                SELECT 'EXISTING' AS MergeAction,
-                       [Key], Fingerprint, State, ClaimedAtUtc, CompletedAtUtc, ExpiresAtUtc,
-                       StatusCode, HeadersJson, ResponseBody
-                FROM {FullTableName}
-                WHERE [Key] = @key;
-            END";
+                   inserted.StatusCode, inserted.HeadersJson, inserted.ResponseBody;";
 
         cmd.Parameters.AddWithValue("@key", key);
         cmd.Parameters.AddWithValue("@fingerprint", requestFingerprint);
@@ -63,6 +56,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
 
         if (!await reader.ReadAsync(ct))
         {
+            // Should not happen — MERGE always outputs a row now
             return new ClaimResult.Claimed();
         }
 
@@ -72,6 +66,8 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
         {
             return new ClaimResult.Claimed();
         }
+
+        // action == "UPDATE" — key already exists
 
         var existingFingerprint = reader.GetString(reader.GetOrdinal("Fingerprint"));
         var state = reader.GetString(reader.GetOrdinal("State"));
