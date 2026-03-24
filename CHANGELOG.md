@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+### Added
+- `ReplayedHeaderName` option on `IdempotencyOptions` to customise the response header name added to replayed responses (default: `X-Idempotent-Replayed`)
+
 ## [1.2.1] - 2026-03-18
 ### Fixed
 - Bug fix in `IdempotencyGuard.Redis` where LuaScript.Prepare() in `StackExchange.Redis` works by replacing @paramName tokens in the script with the appropriate KEYS[n] or ARGV[n] references
