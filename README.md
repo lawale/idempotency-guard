@@ -96,6 +96,9 @@ The middleware computes a SHA256 fingerprint of the request (method + path + bod
 ```csharp
 builder.Services.AddIdempotencyGuard(options =>
 {
+    // Name of the response header added to replayed responses (default: "X-Idempotent-Replayed")
+    options.ReplayedHeaderName = "X-Idempotent-Replayed";
+
     // Header name (default: "Idempotency-Key")
     options.HeaderName = "Idempotency-Key";
 

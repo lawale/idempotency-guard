@@ -4,6 +4,13 @@ public class IdempotencyOptions
 {
     public string HeaderName { get; set; } = "Idempotency-Key";
 
+    /// <summary>
+    /// Name of the response header added to replayed (cached) responses to indicate
+    /// the response was served from the idempotency store rather than re-executing the handler.
+    /// Default: <c>"X-Idempotent-Replayed"</c>.
+    /// </summary>
+    public string ReplayedHeaderName { get; set; } = "X-Idempotent-Replayed";
+
     public TimeSpan ClaimTtl { get; set; } = TimeSpan.FromMinutes(5);
 
     public TimeSpan ResponseTtl { get; set; } = TimeSpan.FromHours(24);

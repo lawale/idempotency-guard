@@ -20,8 +20,8 @@ public class IdempotencyResponseWriter
 
     /// <summary>
     /// Writes a cached <see cref="IdempotentResponse"/> back to the client,
-    /// including the original status code, stored headers, the
-    /// <c>X-Idempotent-Replayed</c> marker, and the response body bytes.
+    /// including the original status code, stored headers, the configured
+    /// <see cref="IdempotencyOptions.ReplayedHeaderName"/> marker, and the response body bytes.
     /// </summary>
     public async Task ReplayAsync(HttpContext httpContext, IdempotentResponse response)
     {
@@ -32,7 +32,7 @@ public class IdempotencyResponseWriter
             httpContext.Response.Headers[header.Key] = header.Value;
         }
 
-        httpContext.Response.Headers["X-Idempotent-Replayed"] = "true";
+        httpContext.Response.Headers[_options.ReplayedHeaderName] = "true";
 
         await httpContext.Response.Body.WriteAsync(response.Body);
     }
