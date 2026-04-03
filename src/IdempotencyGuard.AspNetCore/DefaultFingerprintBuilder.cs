@@ -123,6 +123,7 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
         if (segments.Count == 0)
             return null;
 
-        return string.Join("|", segments.Select(kv => $"{kv.Key}={kv.Value}"));
+        return string.Join("|", segments.Select(kv =>
+            $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
     }
 }

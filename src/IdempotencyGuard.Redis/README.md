@@ -37,14 +37,17 @@ Expired entries are cleaned up automatically by Redis key TTL — no background 
 
 ## Connection options
 
-The store accepts either a connection string or an existing `IConnectionMultiplexer`:
-
 ```csharp
-// Connection string
+// Takes Connection string which registers IConnectionMultiplexer automatically
 builder.Services.AddIdempotencyGuardRedisStore("localhost:6379,abortConnect=false");
 
-// Existing multiplexer (shared with other Redis consumers)
-builder.Services.AddIdempotencyGuardRedisStore(existingMultiplexer);
+// Options callback which resolves IConnectionMultiplexer from configured ConnectionString.
+// If you already have an IConnectionMultiplexer registered, it will be reused.
+builder.Services.AddIdempotencyGuardRedisStore(options =>
+{
+    options.ConnectionString = "localhost:6379,abortConnect=false";
+    options.KeyPrefix = "myapp:idempotency:";
+});
 ```
 
 ## Why Redis
