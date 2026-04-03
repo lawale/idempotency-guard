@@ -14,9 +14,11 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
     {
         _options = options.Value;
         _connectionString = _options.ConnectionString;
+        SqlIdentifierValidator.ThrowIfUnsafe(_options.SchemaName, nameof(_options.SchemaName));
+        SqlIdentifierValidator.ThrowIfUnsafe(_options.TableName, nameof(_options.TableName));
     }
 
-    private string FullTableName => $"{_options.SchemaName}.{_options.TableName}";
+    private string FullTableName => $"\"{_options.SchemaName}\".\"{_options.TableName}\"";
 
     public async Task<ClaimResult> TryClaimAsync(
         string key,
@@ -323,7 +325,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 response_body BYTEA
             );
 
-            CREATE INDEX IF NOT EXISTS idx_{_options.TableName}_expires
+            CREATE INDEX IF NOT EXISTS ""idx_{_options.TableName}_expires""
                 ON {FullTableName} (expires_at);";
 
         await cmd.ExecuteNonQueryAsync(ct);

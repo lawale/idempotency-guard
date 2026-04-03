@@ -14,6 +14,8 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
     {
         _options = options.Value;
         _connectionString = _options.ConnectionString;
+        SqlIdentifierValidator.ThrowIfUnsafe(_options.SchemaName, nameof(_options.SchemaName));
+        SqlIdentifierValidator.ThrowIfUnsafe(_options.TableName, nameof(_options.TableName));
     }
 
     private string FullTableName => $"[{_options.SchemaName}].[{_options.TableName}]";
@@ -313,8 +315,10 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
         await conn.OpenAsync(ct);
 
         await using var cmd = conn.CreateCommand();
+        cmd.Parameters.AddWithValue("@tableName", _options.TableName);
+        cmd.Parameters.AddWithValue("@schemaName", _options.SchemaName);
         cmd.CommandText = $@"
-            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{_options.TableName}' AND schema_id = SCHEMA_ID('{_options.SchemaName}'))
+            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = @tableName AND schema_id = SCHEMA_ID(@schemaName))
             BEGIN
                 CREATE TABLE {FullTableName} (
                     [Key]           NVARCHAR(256)   NOT NULL PRIMARY KEY,

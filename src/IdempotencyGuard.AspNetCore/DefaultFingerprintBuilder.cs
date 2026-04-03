@@ -12,6 +12,9 @@ namespace IdempotencyGuard.AspNetCore;
 /// </summary>
 public class DefaultFingerprintBuilder : IFingerprintBuilder
 {
+    private const int _initialBufferCapacity = 4096; //4kb
+    private const int _readBufferSize = 8192;  //8kb
+
     private readonly IdempotencyOptions _options;
 
     public DefaultFingerprintBuilder(IOptions<IdempotencyOptions> options)
@@ -22,13 +25,11 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
     public async Task<FingerprintResult> ComputeAsync(
         HttpContext context, IdempotentAttribute? attribute)
     {
-        var requestBody = await ReadRequestBodyAsync(context.Request);
+        var requestBody = await ReadRequestBodyAsync(context.Request, _options.MaxFingerprintBodySize);
 
-        var fingerprintBody = requestBody is not null
-            && _options.MaxFingerprintBodySize > 0
-            && requestBody.Length > _options.MaxFingerprintBodySize
-                ? requestBody[.._options.MaxFingerprintBodySize]
-                : (_options.MaxFingerprintBodySize == 0 ? null : requestBody);
+        var fingerprintBody = _options.MaxFingerprintBodySize == 0
+            ? null
+            : requestBody;
 
         if (attribute?.FingerprintProperties is { Length: > 0 } fingerprintProperties)
             fingerprintBody = RequestFingerprint.ExtractProperties(fingerprintBody, fingerprintProperties);
@@ -44,26 +45,52 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
         return new FingerprintResult(fingerprint, requestBody);
     }
 
-    private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request)
+    private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request, int maxBytesToRead)
     {
         if (!request.Body.CanSeek)
         {
             request.EnableBuffering();
         }
 
-        using var memoryStream = new MemoryStream();
-        request.Body.Position = 0;
-        await request.Body.CopyToAsync(memoryStream);
+        // Cap the memory allocation to MaxFingerprintBodySize to prevent
+        // very large request bodies from consuming excessive memory.
+        var bytesToRead = maxBytesToRead > 0
+            ? maxBytesToRead
+            : (int?)null;
+
+        using var memoryStream = bytesToRead.HasValue
+            ? new MemoryStream(Math.Min(bytesToRead.Value, _initialBufferCapacity))
+            : new MemoryStream();
+
         request.Body.Position = 0;
 
-        if (!memoryStream.TryGetBuffer(out var buffer) || buffer.Count == 0)
+        if (bytesToRead.HasValue)
+        {
+            var buffer = new byte[Math.Min(bytesToRead.Value, _readBufferSize)];
+            var remaining = bytesToRead.Value;
+            int bytesRead;
+            while (remaining > 0 &&
+                   (bytesRead = await request.Body.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)))) > 0)
+            {
+                memoryStream.Write(buffer, 0, bytesRead);
+                remaining -= bytesRead;
+            }
+        }
+        else
+        {
+            await request.Body.CopyToAsync(memoryStream);
+        }
+
+        request.Body.Position = 0;
+
+        if (!memoryStream.TryGetBuffer(out var result) || result.Count == 0)
             return null;
 
         // When the internal buffer is exactly right-sized, return it directly
         // to avoid the extra allocation that ToArray() always performs.
-        return buffer.Count == buffer.Array!.Length
-            ? buffer.Array
-            : buffer.AsSpan().ToArray();
+        return result.Count == result.Array!.Length
+            ? result.Array
+            : result.AsSpan().ToArray();
     }
 
     private static string? BuildExtraFingerprint(HttpContext httpContext, IdempotentAttribute? attr)

@@ -75,7 +75,7 @@ public class IdempotencyMiddleware
             return;
         }
 
-        var keyPrefix = httpContext.Items.TryGetValue("IdempotencyKeyPrefix", out var prefixObj)
+        var keyPrefix = httpContext.Items.TryGetValue(_options.KeyPrefixItemKey, out var prefixObj)
                 && prefixObj is string perRequestPrefix
             ? perRequestPrefix
             : _options.KeyPrefix;

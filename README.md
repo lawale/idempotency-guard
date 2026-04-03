@@ -266,8 +266,7 @@ builder.Services.AddIdempotencyGuard(options =>
 app.Use(async (context, next) =>
 {
     var tenantId = context.GetTenantId();
-    var options = context.RequestServices.GetRequiredService<IOptionsSnapshot<IdempotencyOptions>>();
-    options.Value.KeyPrefix = $"tenant-{tenantId}:";
+    context.Items[IdempotencyOptions.DefaultKeyPrefixItemKey] = $"tenant-{tenantId}:";
     await next();
 });
 ```
