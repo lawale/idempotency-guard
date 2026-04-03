@@ -75,9 +75,14 @@ public class IdempotencyMiddleware
             return;
         }
 
-        var idempotencyKey = string.IsNullOrEmpty(_options.KeyPrefix)
+        var keyPrefix = httpContext.Items.TryGetValue(_options.KeyPrefixItemKey, out var prefixObj)
+                && prefixObj is string perRequestPrefix
+            ? perRequestPrefix
+            : _options.KeyPrefix;
+
+        var idempotencyKey = string.IsNullOrEmpty(keyPrefix)
             ? rawKey
-            : $"{_options.KeyPrefix}{rawKey}";
+            : $"{keyPrefix}{rawKey}";
 
         // Per-endpoint TTL overrides
         var claimTtl = idempotentAttr?.ClaimTtlSeconds > 0
@@ -135,6 +140,7 @@ public class IdempotencyMiddleware
         httpContext.Items["IdempotencyContext"] = context;
 
         var originalBodyStream = httpContext.Response.Body;
+        var responseStored = false;
 
         try
         {
@@ -167,10 +173,21 @@ public class IdempotencyMiddleware
                 var setTs = Stopwatch.GetTimestamp();
                 await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
                 RecordStoreLatency(setTs, "set_response");
+                responseStored = true;
 
                 _logger.LogInformation(
                     "Idempotent response stored for key {Key}, status {StatusCode}",
                     key, httpContext.Response.StatusCode);
+            }
+            else
+            {
+                var releaseTs = Stopwatch.GetTimestamp();
+                await _store.ReleaseClaimAsync(key);
+                RecordStoreLatency(releaseTs, "release");
+                IdempotencyMetrics.ClaimsReleased.Add(1);
+                _logger.LogWarning(
+                    "Response body for key {Key} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
+                    key, _options.MaxResponseBodySize);
             }
 
             // Write to the original stream directly from the MemoryStream
@@ -180,10 +197,14 @@ public class IdempotencyMiddleware
         }
         catch (Exception ex)
         {
-            var releaseTs = Stopwatch.GetTimestamp();
-            await _store.ReleaseClaimAsync(key);
-            RecordStoreLatency(releaseTs, "release");
-            IdempotencyMetrics.ClaimsReleased.Add(1);
+            if (!responseStored)
+            {
+                var releaseTs = Stopwatch.GetTimestamp();
+                await _store.ReleaseClaimAsync(key);
+                RecordStoreLatency(releaseTs, "release");
+                IdempotencyMetrics.ClaimsReleased.Add(1);
+            }
+
             _logger.LogWarning(ex, "Idempotency claim released after failure for key {Key}", key);
             throw;
         }

@@ -39,6 +39,19 @@ public class IdempotencyOptions
     /// </summary>
     public string? KeyPrefix { get; set; }
 
+    /// <summary>
+    /// The <see cref="Microsoft.AspNetCore.Http.HttpContext.Items"/> key used to read
+    /// a per-request key prefix override. When the item is present and is a non-null
+    /// <see cref="string"/>, it takes precedence over <see cref="KeyPrefix"/>.
+    /// Default: <c>"IdempotencyKeyPrefix"</c>.
+    /// </summary>
+    public string KeyPrefixItemKey { get; set; } = DefaultKeyPrefixItemKey;
+
+    /// <summary>
+    /// Default value for <see cref="KeyPrefixItemKey"/>.
+    /// </summary>
+    public const string DefaultKeyPrefixItemKey = "IdempotencyKeyPrefix";
+
     public bool Enabled { get; set; } = true;
 
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
