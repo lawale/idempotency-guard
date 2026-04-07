@@ -288,7 +288,7 @@ A key `abc-123` with prefix `prod:` is stored as `prod:abc-123`.
 builder.Services.AddIdempotencyGuardRedisStore("localhost:6379");
 ```
 
-Uses atomic Lua scripts for claim operations (SET NX) to guarantee consistency under concurrent access. Expired entries are cleaned up automatically by Redis key TTL — no background cleanup needed.
+Uses atomic Lua scripts for claim operations (SET NX) to guarantee consistency under concurrent access. The Redis package owns the connection lifecycle internally, applies `AbortOnConnectFail=false`, and reconnects lazily with throttling via `RedisIdempotencyOptions.MinimumReconnectInterval`. Expired entries are cleaned up automatically by Redis key TTL — no background cleanup needed.
 
 ### PostgreSQL Store
 
