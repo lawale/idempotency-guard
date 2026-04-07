@@ -7,13 +7,13 @@ namespace IdempotencyGuard.Redis;
 
 public class RedisIdempotencyStore : IIdempotencyStore
 {
-    private readonly IConnectionMultiplexer _redis;
+    private readonly RedisConnectionManager _redis;
     private readonly RedisIdempotencyOptions _options;
 
     private static readonly LuaScript ClaimScript = LuaScript.Prepare(LoadScript("claim.lua"));
     private static readonly LuaScript CompleteScript = LuaScript.Prepare(LoadScript("complete.lua"));
 
-    public RedisIdempotencyStore(IConnectionMultiplexer redis, IOptions<RedisIdempotencyOptions> options)
+    internal RedisIdempotencyStore(RedisConnectionManager redis, IOptions<RedisIdempotencyOptions> options)
     {
         _redis = redis;
         _options = options.Value;

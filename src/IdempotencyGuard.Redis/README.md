@@ -38,17 +38,20 @@ Expired entries are cleaned up automatically by Redis key TTL — no background 
 ## Connection options
 
 ```csharp
-// Takes Connection string which registers IConnectionMultiplexer automatically
-builder.Services.AddIdempotencyGuardRedisStore("localhost:6379,abortConnect=false");
+// The Redis package owns the connection lifecycle internally.
+// AbortOnConnectFail is forced to false for resilient startup/reconnect behavior.
+builder.Services.AddIdempotencyGuardRedisStore("localhost:6379");
 
-// Options callback which resolves IConnectionMultiplexer from configured ConnectionString.
-// If you already have an IConnectionMultiplexer registered, it will be reused.
+// Advanced options
 builder.Services.AddIdempotencyGuardRedisStore(options =>
 {
-    options.ConnectionString = "localhost:6379,abortConnect=false";
+    options.ConnectionString = "localhost:6379,connectTimeout=5000,syncTimeout=1000";
     options.KeyPrefix = "myapp:idempotency:";
+    options.MinimumReconnectInterval = TimeSpan.FromSeconds(60);
 });
 ```
+
+Connections are created lazily on first use. If Redis is temporarily unavailable, the package keeps ownership of the multiplexer and attempts reconnects on demand. Reconnect attempts are throttled by `MinimumReconnectInterval`, and `AbortOnConnectFail = false` is always applied even if the connection string says otherwise.
 
 ## Why Redis
 

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+### Changed
+- `IdempotencyGuard.Redis` now owns Redis connection lifecycle internally instead of registering or reusing `IConnectionMultiplexer`
+- Redis connections are created lazily, reconnect on demand, force `AbortOnConnectFail=false`, and throttle reconnect attempts via `RedisIdempotencyOptions.MinimumReconnectInterval`
+
 ## [1.2.3] - 2026-04-03
 ### Added
 - `ReplayedHeaderName` option on `IdempotencyOptions` to customise the response header name added to replayed responses (default: `X-Idempotent-Replayed`)

@@ -1,21 +1,35 @@
 using IdempotencyGuard.Integration.Tests.Fixtures;
 using IdempotencyGuard.Redis;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IdempotencyGuard.Integration.Tests.Stores;
 
-public class RedisStoreTests : IdempotencyStoreContractTests, IClassFixture<RedisContainerFixture>
+public class RedisStoreTests : IdempotencyStoreContractTests, IClassFixture<RedisContainerFixture>, IAsyncLifetime
 {
-    private readonly RedisIdempotencyStore _store;
+    private readonly IServiceProvider _serviceProvider;
 
     public RedisStoreTests(RedisContainerFixture fixture)
     {
-        var options = Options.Create(new RedisIdempotencyOptions
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIdempotencyGuardRedisStore(options =>
         {
-            KeyPrefix = "test:"
+            options.ConnectionString = fixture.ConnectionString;
+            options.KeyPrefix = "test:";
         });
-        _store = new RedisIdempotencyStore(fixture.Connection, options);
+
+        _serviceProvider = services.BuildServiceProvider();
     }
 
-    protected override IIdempotencyStore Store => _store;
+    protected override IIdempotencyStore Store => _serviceProvider.GetRequiredService<IIdempotencyStore>();
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        if (_serviceProvider is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+    }
 }
