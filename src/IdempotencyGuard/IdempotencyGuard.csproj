@@ -8,6 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="IdempotencyGuard.AspNetCore" />
+    <InternalsVisibleTo Include="IdempotencyGuard.Tests" />
+    <InternalsVisibleTo Include="IdempotencyGuard.AspNetCore.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 

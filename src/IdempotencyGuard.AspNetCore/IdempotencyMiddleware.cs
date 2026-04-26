@@ -95,30 +95,52 @@ public class IdempotencyMiddleware
 
         IdempotencyMetrics.RequestsTotal.Add(1);
 
+        using var requestActivity = IdempotencyActivitySource.Source.StartActivity("idempotency.request", ActivityKind.Internal);
+        requestActivity?.SetTag("idempotency.key", idempotencyKey);
+        requestActivity?.SetTag("http.method", httpContext.Request.Method);
+        requestActivity?.SetTag("http.route", httpContext.Request.Path.Value);
+
         var result = await _fingerprintBuilder.ComputeAsync(httpContext, idempotentAttr);
 
+        ClaimResult claimResult;
         var claimTs = Stopwatch.GetTimestamp();
-        var claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl);
+        using (var claimActivity = IdempotencyActivitySource.StartStoreActivity("claim", idempotencyKey))
+        {
+            claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl);
+            claimActivity?.SetTag("idempotency.claim.result", claimResult switch
+            {
+                ClaimResult.Claimed => "claimed",
+                ClaimResult.Completed => "completed",
+                ClaimResult.AlreadyClaimed => "already_claimed",
+                ClaimResult.FingerprintMismatch => "fingerprint_mismatch",
+                _ => "unknown"
+            });
+        }
         RecordStoreLatency(claimTs, "claim");
 
+        string resultTag;
         switch (claimResult)
         {
             case ClaimResult.Claimed:
+                resultTag = "claimed";
                 IdempotencyMetrics.ClaimsTotal.Add(1);
                 await HandleNewRequestAsync(httpContext, idempotencyKey, result.Fingerprint, result.RequestBody, responseTtl);
                 break;
 
             case ClaimResult.Completed completed:
+                resultTag = "replayed";
                 IdempotencyMetrics.ReplaysTotal.Add(1);
                 await ReplayResponseAsync(httpContext, idempotencyKey, completed.Entry);
                 break;
 
             case ClaimResult.AlreadyClaimed:
+                resultTag = "conflict";
                 IdempotencyMetrics.ConflictsTotal.Add(1);
                 await HandleConcurrentRequestAsync(httpContext, idempotencyKey);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
+                resultTag = "fingerprint_mismatch";
                 IdempotencyMetrics.FingerprintMismatchesTotal.Add(1);
                 _logger.LogWarning(
                     "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
@@ -127,7 +149,13 @@ public class IdempotencyMiddleware
                     "Idempotency key has already been used with a different request payload",
                     idempotencyKey);
                 break;
+
+            default:
+                resultTag = "unknown";
+                break;
         }
+
+        requestActivity?.SetTag("idempotency.result", resultTag);
     }
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
@@ -171,7 +199,10 @@ public class IdempotencyMiddleware
                 };
 
                 var setTs = Stopwatch.GetTimestamp();
-                await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
+                using (IdempotencyActivitySource.StartStoreActivity("set_response", key))
+                {
+                    await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
+                }
                 RecordStoreLatency(setTs, "set_response");
                 responseStored = true;
 
@@ -182,7 +213,10 @@ public class IdempotencyMiddleware
             else
             {
                 var releaseTs = Stopwatch.GetTimestamp();
-                await _store.ReleaseClaimAsync(key);
+                using (IdempotencyActivitySource.StartStoreActivity("release", key))
+                {
+                    await _store.ReleaseClaimAsync(key);
+                }
                 RecordStoreLatency(releaseTs, "release");
                 IdempotencyMetrics.ClaimsReleased.Add(1);
                 _logger.LogWarning(
@@ -200,7 +234,10 @@ public class IdempotencyMiddleware
             if (!responseStored)
             {
                 var releaseTs = Stopwatch.GetTimestamp();
-                await _store.ReleaseClaimAsync(key);
+                using (IdempotencyActivitySource.StartStoreActivity("release", key))
+                {
+                    await _store.ReleaseClaimAsync(key);
+                }
                 RecordStoreLatency(releaseTs, "release");
                 IdempotencyMetrics.ClaimsReleased.Add(1);
             }
@@ -216,8 +253,12 @@ public class IdempotencyMiddleware
 
     private async Task ReplayResponseAsync(HttpContext httpContext, string key, IdempotencyEntry entry)
     {
+        IdempotentResponse? response;
         var getTs = Stopwatch.GetTimestamp();
-        var response = await _store.GetResponseAsync(key);
+        using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
+        {
+            response = await _store.GetResponseAsync(key);
+        }
         RecordStoreLatency(getTs, "get_response");
 
         if (response is null)
@@ -249,8 +290,12 @@ public class IdempotencyMiddleware
             await Task.Delay(delay);
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
+            IdempotentResponse? response;
             var pollTs = Stopwatch.GetTimestamp();
-            var response = await _store.GetResponseAsync(key);
+            using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
+            {
+                response = await _store.GetResponseAsync(key);
+            }
             RecordStoreLatency(pollTs, "get_response");
 
             if (response is not null)

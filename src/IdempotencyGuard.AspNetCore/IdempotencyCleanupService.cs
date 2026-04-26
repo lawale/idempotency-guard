@@ -44,6 +44,8 @@ internal sealed class IdempotencyCleanupService : BackgroundService
 
             try
             {
+                using var sweepActivity = IdempotencyActivitySource.Source.StartActivity("idempotency.cleanup", ActivityKind.Internal);
+
                 var sweepTs = Stopwatch.GetTimestamp();
                 var totalDeleted = 0;
                 var iterations = 0;
@@ -67,6 +69,9 @@ internal sealed class IdempotencyCleanupService : BackgroundService
                         "Idempotency cleanup: purged {DeletedCount} expired entries in {Iterations} iteration(s)",
                         totalDeleted, iterations);
                 }
+
+                sweepActivity?.SetTag("idempotency.purge.deleted", totalDeleted);
+                sweepActivity?.SetTag("idempotency.purge.iterations", iterations);
 
                 IdempotencyMetrics.PurgeLatency.Record(
                     Stopwatch.GetElapsedTime(sweepTs).TotalMilliseconds);
