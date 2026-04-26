@@ -7,7 +7,7 @@ namespace IdempotencyGuard.Redis;
 
 internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
 {
-    private readonly object _reconnectLock = new();
+    private readonly SemaphoreSlim _reconnectLock = new(1, 1);
     private readonly ILogger<RedisConnectionManager> _logger;
     private readonly RedisIdempotencyOptions _options;
 
@@ -15,7 +15,7 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
     private ConfigurationOptions? _redisConfigurationOptions;
     private DateTimeOffset _lastReconnectTime = DateTimeOffset.MinValue;
     private bool _firstInitialization = true;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public RedisConnectionManager(
         IOptions<RedisIdempotencyOptions> options,
@@ -25,16 +25,18 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
         _logger = logger;
     }
 
-    public IDatabase GetDatabase()
+    public async ValueTask<IDatabase> GetDatabaseAsync()
     {
         ThrowIfDisposed();
-        return GetConnection().GetDatabase();
+        var connection = await GetConnectionAsync();
+        return connection.GetDatabase();
     }
 
-    public Task<TimeSpan> PingAsync()
+    public async Task<TimeSpan> PingAsync()
     {
         ThrowIfDisposed();
-        return GetDatabase().PingAsync();
+        var db = await GetDatabaseAsync();
+        return await db.PingAsync();
     }
 
     public void Dispose()
@@ -44,9 +46,10 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
             return;
         }
 
-        var connection = Interlocked.Exchange(ref _redisConnection, null);
         _disposed = true;
+        var connection = Interlocked.Exchange(ref _redisConnection, null);
         connection?.Dispose();
+        _reconnectLock.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -56,32 +59,36 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
             return;
         }
 
-        var connection = Interlocked.Exchange(ref _redisConnection, null);
         _disposed = true;
+        var connection = Interlocked.Exchange(ref _redisConnection, null);
 
         if (connection is IAsyncDisposable asyncDisposable)
         {
             await asyncDisposable.DisposeAsync();
-            return;
+        }
+        else
+        {
+            connection?.Dispose();
         }
 
-        connection?.Dispose();
+        _reconnectLock.Dispose();
     }
 
-    private IConnectionMultiplexer GetConnection()
+    private ValueTask<IConnectionMultiplexer> GetConnectionAsync()
     {
         var connection = Volatile.Read(ref _redisConnection);
         if (connection is { IsConnected: true })
         {
-            return connection;
+            return new ValueTask<IConnectionMultiplexer>(connection);
         }
 
-        return ForceReconnect();
+        return ReconnectAsync();
     }
 
-    private IConnectionMultiplexer ForceReconnect()
+    private async ValueTask<IConnectionMultiplexer> ReconnectAsync()
     {
-        lock (_reconnectLock)
+        await _reconnectLock.WaitAsync();
+        try
         {
             ThrowIfDisposed();
 
@@ -107,7 +114,7 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
             var oldConnection = _redisConnection;
             _lastReconnectTime = utcNow;
 
-            _redisConnection = ConnectionMultiplexer.Connect(GetConfigurationOptions());
+            _redisConnection = await ConnectionMultiplexer.ConnectAsync(GetConfigurationOptions());
 
             if (_redisConnection.IsConnected)
             {
@@ -128,6 +135,10 @@ internal sealed class RedisConnectionManager : IDisposable, IAsyncDisposable
             }
 
             return _redisConnection;
+        }
+        finally
+        {
+            _reconnectLock.Release();
         }
     }
 

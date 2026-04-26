@@ -69,15 +69,36 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         TimeSpan responseTtl,
         CancellationToken ct = default)
     {
-        if (_entries.TryGetValue(key, out var entry))
-        {
-            entry.State = IdempotencyState.Completed;
-            entry.CompletedAtUtc = DateTime.UtcNow;
-            entry.StatusCode = response.StatusCode;
-            entry.ResponseHeaders = JsonSerializer.Serialize(response.Headers);
-            entry.ResponseBody = response.Body;
-            entry.ExpiresAtUtc = DateTime.UtcNow.Add(responseTtl);
-        }
+        var now = DateTime.UtcNow;
+
+        // Atomically swap the entry to prevent torn reads from concurrent GetResponseAsync
+        // and guard against the expired-claim-overwrite race in TryClaimAsync.
+        _entries.AddOrUpdate(key,
+            static (_, args) => new IdempotencyEntry
+            {
+                Key = args.key,
+                RequestFingerprint = "",
+                State = IdempotencyState.Completed,
+                ClaimedAtUtc = args.now,
+                CompletedAtUtc = args.now,
+                StatusCode = args.response.StatusCode,
+                ResponseHeaders = JsonSerializer.Serialize(args.response.Headers),
+                ResponseBody = args.response.Body,
+                ExpiresAtUtc = args.now.Add(args.responseTtl)
+            },
+            static (_, existing, args) => new IdempotencyEntry
+            {
+                Key = existing.Key,
+                RequestFingerprint = existing.RequestFingerprint,
+                State = IdempotencyState.Completed,
+                ClaimedAtUtc = existing.ClaimedAtUtc,
+                CompletedAtUtc = args.now,
+                StatusCode = args.response.StatusCode,
+                ResponseHeaders = JsonSerializer.Serialize(args.response.Headers),
+                ResponseBody = args.response.Body,
+                ExpiresAtUtc = args.now.Add(args.responseTtl)
+            },
+            (key, now, response, responseTtl));
 
         return Task.CompletedTask;
     }
@@ -139,7 +160,12 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 
     private void CleanupExpiredEntries()
     {
-        PurgeExpiredAsync(int.MaxValue, CancellationToken.None).GetAwaiter().GetResult();
+        var now = DateTime.UtcNow;
+        foreach (var kvp in _entries)
+        {
+            if (kvp.Value.ExpiresAtUtc < now)
+                _entries.TryRemove(kvp);
+        }
     }
 
     public void Dispose()

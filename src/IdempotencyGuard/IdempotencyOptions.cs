@@ -66,12 +66,14 @@ public class IdempotencyOptions
     /// <summary>
     /// Additional response headers to exclude from storage beyond the built-in defaults
     /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> is set.
+    /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderDenyList { get; set; }
 
     /// <summary>
     /// If set, ONLY these response headers will be stored and replayed.
     /// Overrides <see cref="HeaderDenyList"/> and the built-in defaults entirely.
+    /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderAllowList { get; set; }
 
@@ -114,18 +116,21 @@ public static class HeaderFilter
     {
         if (options.HeaderAllowList is { Count: > 0 })
         {
-            return options.HeaderAllowList.Any(
-                h => string.Equals(h, headerName, StringComparison.OrdinalIgnoreCase));
+            return Equals(options.HeaderAllowList.Comparer, StringComparer.OrdinalIgnoreCase)
+                ? options.HeaderAllowList.Contains(headerName)
+                : options.HeaderAllowList.Any(
+                    h => string.Equals(h, headerName, StringComparison.OrdinalIgnoreCase));
         }
 
         if (DefaultDenyList.Contains(headerName))
             return false;
 
-        if (options.HeaderDenyList is not null
-            && options.HeaderDenyList.Any(
-                h => string.Equals(h, headerName, StringComparison.OrdinalIgnoreCase)))
+        if (options.HeaderDenyList is { Count: > 0 })
         {
-            return false;
+            return Equals(options.HeaderDenyList.Comparer, StringComparer.OrdinalIgnoreCase)
+                ? !options.HeaderDenyList.Contains(headerName)
+                : !options.HeaderDenyList.Any(
+                    h => string.Equals(h, headerName, StringComparison.OrdinalIgnoreCase));
         }
 
         return true;
