@@ -6,16 +6,7 @@ namespace IdempotencyGuard;
 public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyStore, IDisposable
 {
     private readonly ConcurrentDictionary<string, IdempotencyEntry> _entries = new();
-    private readonly Timer _cleanupTimer;
-
-    public InMemoryIdempotencyStore()
-    {
-        _cleanupTimer = new Timer(
-            _ => CleanupExpiredEntries(),
-            null,
-            TimeSpan.FromMinutes(1),
-            TimeSpan.FromMinutes(1));
-    }
+    public InMemoryIdempotencyStore() { }
 
     public Task<ClaimResult> TryClaimAsync(
         string key,
@@ -82,7 +73,7 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 ClaimedAtUtc = args.now,
                 CompletedAtUtc = args.now,
                 StatusCode = args.response.StatusCode,
-                ResponseHeaders = JsonSerializer.Serialize(args.response.Headers),
+                ResponseHeadersMap = CloneHeaders(args.response.Headers),
                 ResponseBody = args.response.Body,
                 ExpiresAtUtc = args.now.Add(args.responseTtl)
             },
@@ -94,7 +85,7 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 ClaimedAtUtc = existing.ClaimedAtUtc,
                 CompletedAtUtc = args.now,
                 StatusCode = args.response.StatusCode,
-                ResponseHeaders = JsonSerializer.Serialize(args.response.Headers),
+                ResponseHeadersMap = CloneHeaders(args.response.Headers),
                 ResponseBody = args.response.Body,
                 ExpiresAtUtc = args.now.Add(args.responseTtl)
             },
@@ -125,9 +116,11 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         var response = new IdempotentResponse
         {
             StatusCode = entry.StatusCode!.Value,
-            Headers = entry.ResponseHeaders is not null
-                ? JsonSerializer.Deserialize<Dictionary<string, string[]>>(entry.ResponseHeaders)!
-                : new Dictionary<string, string[]>(),
+            Headers = entry.ResponseHeadersMap is not null
+                ? CloneHeaders(entry.ResponseHeadersMap)
+                : entry.ResponseHeaders is not null
+                    ? JsonSerializer.Deserialize<Dictionary<string, string[]>>(entry.ResponseHeaders)!
+                    : new Dictionary<string, string[]>(),
             Body = entry.ResponseBody.GetValueOrDefault()
         };
 
@@ -142,11 +135,21 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
     public Task<int> PurgeExpiredAsync(int batchSize, CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
-        var expiredKeys = _entries
-            .Where(kvp => kvp.Value.ExpiresAtUtc < now)
-            .Take(batchSize)
-            .Select(kvp => kvp.Key)
-            .ToList();
+        var expiredKeys = new List<string>(Math.Max(batchSize, 4));
+
+        foreach (var kvp in _entries)
+        {
+            if (kvp.Value.ExpiresAtUtc >= now)
+            {
+                continue;
+            }
+
+            expiredKeys.Add(kvp.Key);
+            if (expiredKeys.Count >= batchSize)
+            {
+                break;
+            }
+        }
 
         var count = 0;
         foreach (var key in expiredKeys)
@@ -158,19 +161,17 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         return Task.FromResult(count);
     }
 
-    private void CleanupExpiredEntries()
+    private static Dictionary<string, string[]> CloneHeaders(Dictionary<string, string[]> headers)
     {
-        var now = DateTime.UtcNow;
-        foreach (var kvp in _entries)
+        var clone = new Dictionary<string, string[]>(headers.Count, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, values) in headers)
         {
-            if (kvp.Value.ExpiresAtUtc < now)
-                _entries.TryRemove(kvp);
+            clone[key] = values.ToArray();
         }
+
+        return clone;
     }
 
-    public void Dispose()
-    {
-        _cleanupTimer.Dispose();
-        GC.SuppressFinalize(this);
-    }
+    public void Dispose() { }
 }

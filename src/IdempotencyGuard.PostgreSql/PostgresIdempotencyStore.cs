@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Options;
 using Npgsql;
 
@@ -115,7 +116,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         cmd.Parameters.AddWithValue("expires_at", DateTime.UtcNow.Add(responseTtl));
         cmd.Parameters.AddWithValue("status_code", response.StatusCode);
         cmd.Parameters.AddWithValue("headers", JsonSerializer.Serialize(response.Headers));
-        cmd.Parameters.AddWithValue("body", response.Body.ToArray());
+        cmd.Parameters.AddWithValue("body", GetBodyBytes(response.Body));
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -355,5 +356,17 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 ? null
                 : (ReadOnlyMemory<byte>)(byte[])reader[reader.GetOrdinal("response_body")]
         };
+    }
+
+    private static byte[] GetBodyBytes(ReadOnlyMemory<byte> body)
+    {
+        if (MemoryMarshal.TryGetArray(body, out var segment)
+            && segment.Offset == 0
+            && segment.Count == segment.Array!.Length)
+        {
+            return segment.Array;
+        }
+
+        return body.ToArray();
     }
 }
