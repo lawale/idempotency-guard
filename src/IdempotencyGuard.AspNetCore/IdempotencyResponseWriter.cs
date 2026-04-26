@@ -64,6 +64,7 @@ public class IdempotencyResponseWriter
             ? _options.ErrorResponseFactory(problem)
             : new { error = message };
 
-        await httpContext.Response.WriteAsync(JsonSerializer.Serialize(body));
+        var json = JsonSerializer.SerializeToUtf8Bytes(body);
+        await httpContext.Response.Body.WriteAsync(json, httpContext.RequestAborted);
     }
 }

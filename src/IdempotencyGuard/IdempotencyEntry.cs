@@ -11,5 +11,6 @@ public class IdempotencyEntry
 
     public int? StatusCode { get; set; }
     public string? ResponseHeaders { get; set; }
+    public Dictionary<string, string[]>? ResponseHeadersMap { get; set; }
     public ReadOnlyMemory<byte>? ResponseBody { get; set; }
 }

@@ -36,6 +36,8 @@ public class IdempotencyMiddleware
 
     public async Task InvokeAsync(HttpContext httpContext)
     {
+        var requestAborted = httpContext.RequestAborted;
+
         if (!IsEnabled(httpContext))
         {
             await _next(httpContext);
@@ -106,7 +108,7 @@ public class IdempotencyMiddleware
         var claimTs = Stopwatch.GetTimestamp();
         using (var claimActivity = IdempotencyActivitySource.StartStoreActivity("claim", idempotencyKey))
         {
-            claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl);
+            claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl, requestAborted);
             claimActivity?.SetTag("idempotency.claim.result", claimResult switch
             {
                 ClaimResult.Claimed => "claimed",
@@ -124,19 +126,19 @@ public class IdempotencyMiddleware
             case ClaimResult.Claimed:
                 resultTag = "claimed";
                 IdempotencyMetrics.ClaimsTotal.Add(1);
-                await HandleNewRequestAsync(httpContext, idempotencyKey, result.Fingerprint, result.RequestBody, responseTtl);
+                await HandleNewRequestAsync(httpContext, idempotencyKey, result.Fingerprint, responseTtl, requestAborted);
                 break;
 
-            case ClaimResult.Completed completed:
+            case ClaimResult.Completed:
                 resultTag = "replayed";
                 IdempotencyMetrics.ReplaysTotal.Add(1);
-                await ReplayResponseAsync(httpContext, idempotencyKey, completed.Entry);
+                await ReplayResponseAsync(httpContext, idempotencyKey, requestAborted);
                 break;
 
             case ClaimResult.AlreadyClaimed:
                 resultTag = "conflict";
                 IdempotencyMetrics.ConflictsTotal.Add(1);
-                await HandleConcurrentRequestAsync(httpContext, idempotencyKey);
+                await HandleConcurrentRequestAsync(httpContext, idempotencyKey, requestAborted);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
@@ -160,7 +162,12 @@ public class IdempotencyMiddleware
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
 
-    private async Task HandleNewRequestAsync(HttpContext httpContext, string key, string fingerprint, byte[]? requestBody, TimeSpan responseTtl)
+    private async Task HandleNewRequestAsync(
+        HttpContext httpContext,
+        string key,
+        string fingerprint,
+        TimeSpan responseTtl,
+        CancellationToken requestAborted)
     {
         _logger.LogInformation("Idempotency key claimed: {Key}", key);
 
@@ -195,13 +202,15 @@ public class IdempotencyMiddleware
                 {
                     StatusCode = httpContext.Response.StatusCode,
                     Headers = headers,
-                    Body = responseBuffer.AsMemory()
+                    Body = responseBuffer.Count == responseBuffer.Array!.Length
+                        ? responseBuffer.Array
+                        : responseBuffer.AsSpan().ToArray()
                 };
 
                 var setTs = Stopwatch.GetTimestamp();
                 using (IdempotencyActivitySource.StartStoreActivity("set_response", key))
                 {
-                    await _store.SetResponseAsync(key, idempotentResponse, responseTtl);
+                    await _store.SetResponseAsync(key, idempotentResponse, responseTtl, requestAborted);
                 }
                 RecordStoreLatency(setTs, "set_response");
                 responseStored = true;
@@ -215,7 +224,7 @@ public class IdempotencyMiddleware
                 var releaseTs = Stopwatch.GetTimestamp();
                 using (IdempotencyActivitySource.StartStoreActivity("release", key))
                 {
-                    await _store.ReleaseClaimAsync(key);
+                    await _store.ReleaseClaimAsync(key, CancellationToken.None);
                 }
                 RecordStoreLatency(releaseTs, "release");
                 IdempotencyMetrics.ClaimsReleased.Add(1);
@@ -227,7 +236,7 @@ public class IdempotencyMiddleware
             // Write to the original stream directly from the MemoryStream
             // internal buffer, avoiding an extra array allocation.
             responseBody.Position = 0;
-            await responseBody.CopyToAsync(originalBodyStream);
+            await responseBody.CopyToAsync(originalBodyStream, requestAborted);
         }
         catch (Exception ex)
         {
@@ -236,7 +245,7 @@ public class IdempotencyMiddleware
                 var releaseTs = Stopwatch.GetTimestamp();
                 using (IdempotencyActivitySource.StartStoreActivity("release", key))
                 {
-                    await _store.ReleaseClaimAsync(key);
+                    await _store.ReleaseClaimAsync(key, CancellationToken.None);
                 }
                 RecordStoreLatency(releaseTs, "release");
                 IdempotencyMetrics.ClaimsReleased.Add(1);
@@ -251,13 +260,16 @@ public class IdempotencyMiddleware
         }
     }
 
-    private async Task ReplayResponseAsync(HttpContext httpContext, string key, IdempotencyEntry entry)
+    private async Task ReplayResponseAsync(
+        HttpContext httpContext,
+        string key,
+        CancellationToken requestAborted)
     {
         IdempotentResponse? response;
         var getTs = Stopwatch.GetTimestamp();
         using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
         {
-            response = await _store.GetResponseAsync(key);
+            response = await _store.GetResponseAsync(key, requestAborted);
         }
         RecordStoreLatency(getTs, "get_response");
 
@@ -273,7 +285,10 @@ public class IdempotencyMiddleware
         await _responseWriter.ReplayAsync(httpContext, response);
     }
 
-    private async Task HandleConcurrentRequestAsync(HttpContext httpContext, string key)
+    private async Task HandleConcurrentRequestAsync(
+        HttpContext httpContext,
+        string key,
+        CancellationToken requestAborted)
     {
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
@@ -287,14 +302,21 @@ public class IdempotencyMiddleware
 
         while (DateTime.UtcNow < deadline)
         {
-            await Task.Delay(delay);
+            try
+            {
+                await Task.Delay(delay, requestAborted);
+            }
+            catch (OperationCanceledException) when (requestAborted.IsCancellationRequested)
+            {
+                return;
+            }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
             IdempotentResponse? response;
             var pollTs = Stopwatch.GetTimestamp();
             using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
             {
-                response = await _store.GetResponseAsync(key);
+                response = await _store.GetResponseAsync(key, requestAborted);
             }
             RecordStoreLatency(pollTs, "get_response");
 

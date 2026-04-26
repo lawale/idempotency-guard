@@ -25,7 +25,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
         TimeSpan claimTtl,
         CancellationToken ct = default)
     {
-        var db = _redis.GetDatabase();
+        var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
 
@@ -76,7 +76,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
         TimeSpan responseTtl,
         CancellationToken ct = default)
     {
-        var db = _redis.GetDatabase();
+        var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
 
         var entry = new RedisEntry
@@ -101,14 +101,14 @@ public class RedisIdempotencyStore : IIdempotencyStore
 
     public async Task ReleaseClaimAsync(string key, CancellationToken ct = default)
     {
-        var db = _redis.GetDatabase();
+        var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
         await db.KeyDeleteAsync(redisKey);
     }
 
     public async Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)
     {
-        var db = _redis.GetDatabase();
+        var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
 
         var value = await db.StringGetAsync(redisKey);
