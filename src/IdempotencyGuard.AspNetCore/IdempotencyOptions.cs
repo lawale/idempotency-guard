@@ -32,7 +32,7 @@ public class IdempotencyOptions
     /// <summary>
     /// Maximum number of request body bytes used for fingerprint hashing.
     /// Bodies larger than this are fingerprinted using only the first N bytes.
-    /// Default: 1 MB. Set to 0 to skip body hashing entirely.
+    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read.
     /// </summary>
     public int MaxFingerprintBodySize { get; set; } = 1_048_576;
 

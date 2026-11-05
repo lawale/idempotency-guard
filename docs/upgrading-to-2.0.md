@@ -77,6 +77,7 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 
 ### Behaviour
 
+- `MaxFingerprintBodySize = 0` no longer reads the request body. It skipped hashing the body as documented, but read all of it into memory first, with no limit.
 - Keys longer than `MaxKeyLength` (1024 characters by default), or containing control characters, are rejected with a 400. Previously, long keys failed with a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). If your clients send longer keys, raise `MaxKeyLength`, which is now safe on every store.
 - `KeyPrefix` is limited to 128 characters. A longer configured prefix fails at startup, and a longer per-request prefix fails the request.
 - Keys differing only by case are now separate on SQL Server, matching the other stores.
