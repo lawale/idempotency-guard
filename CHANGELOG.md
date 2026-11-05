@@ -27,11 +27,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - In-memory store: an entry past its `ResponseTtl` returned a 409 or 422 instead of being claimable, and a response stored after its claim was purged made every retry return a 422
 - An action's `[Idempotent]` attribute discarded its controller's settings. They now merge, and the most specific value wins
 - Concurrent first requests no longer race to create the SQL stores' tables within an instance
+- A key too long for SQL Server's key column caused a 500. Keys over `MaxKeyLength` or containing control characters now get a 400 on every store
 - The PostgreSQL and SQL Server READMEs listed the wrong name for the fingerprint column
 
 ### Added
 - Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup
 - `ShouldStoreResponse` decides by status code whether a response is stored, globally or per policy. By default every response is stored, including 5xx
+- `MaxKeyLength` limits the keys accepted from clients. The default is 200, and 0 disables the check
 - `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
 - BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size

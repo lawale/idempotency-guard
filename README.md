@@ -133,6 +133,10 @@ builder.Services.AddIdempotencyGuard(options =>
     // Set to 0 to skip body hashing entirely.
     options.MaxFingerprintBodySize = 1_048_576;
 
+    // Longest key accepted from a client (default: 200). Longer keys get a 400. Set to 0 to disable.
+    // The SQL Server store's key column holds 256 characters, including any scope (33) and prefix.
+    options.MaxKeyLength = 200;
+
     // Who a key belongs to. Set this on any API with more than one caller.
     options.KeyScope = context => context.User.FindFirstValue("sub");
 

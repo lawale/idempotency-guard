@@ -44,6 +44,13 @@ public class IdempotencyOptions
     public string? KeyPrefix { get; set; }
 
     /// <summary>
+    /// Longest idempotency key accepted from a client, in characters. A longer key is rejected
+    /// with a 400. Default: 200, which leaves room for a scope and a short prefix within the
+    /// SQL Server store's 256-character key column. Set to 0 to disable the check.
+    /// </summary>
+    public int MaxKeyLength { get; set; } = 200;
+
+    /// <summary>
     /// The <see cref="HttpContext.Items"/> key used to read
     /// a per-request key prefix override. When the item is present and is a non-null
     /// <see cref="string"/>, it takes precedence over <see cref="KeyPrefix"/>.
@@ -229,7 +236,8 @@ public enum IdempotencyErrorKind
     FingerprintMismatch,
     Conflict,
     Timeout,
-    MissingScope
+    MissingScope,
+    InvalidKey
 }
 
 public class IdempotencyProblem

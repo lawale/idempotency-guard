@@ -35,6 +35,7 @@ builder.Services.AddIdempotencyGuard(options =>
             IdempotencyErrorKind.Conflict => "Request In Progress",
             IdempotencyErrorKind.Timeout => "Request Timed Out",
             IdempotencyErrorKind.MissingScope => "Unknown Caller",
+            IdempotencyErrorKind.InvalidKey => "Invalid Idempotency Key",
             _ => "Idempotency Error"
         },
         status = problem.StatusCode,

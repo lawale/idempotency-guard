@@ -51,6 +51,7 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
                         options.ClaimTtl = ClaimTtl;
                         options.ConcurrentRequestPolicy = ConcurrentRequestPolicy.ReturnConflict;
                         options.Cleanup.Enabled = false;
+                        options.AddPolicy("scoped", policy => policy.KeyScope = _ => "tenant");
                     });
                     ConfigureStore(services);
                     services.AddRouting();
@@ -75,6 +76,7 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
                     {
                         endpoints.MapPost("/gated", GatedHandlerAsync);
                         endpoints.MapPost("/abort", AbortingHandlerAsync);
+                        endpoints.MapPost("/scoped", CreatedHandlerAsync).RequireIdempotency(o => o.Policy = "scoped");
                     });
                 });
             })
@@ -115,6 +117,28 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
 
         _abortHandlerRuns.Should().Be(1, "the side effect already happened on the aborted request");
         retry.Headers.Contains("X-Idempotent-Replayed").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Longest_allowed_key_works_with_a_scope_on_every_store()
+    {
+        var key = $"{UniqueKey()}{new string('k', 200)}"[..200];
+
+        var first = await _client!.SendAsync(Post("/scoped", key, "A"));
+        var retry = await _client!.SendAsync(Post("/scoped", key, "A"));
+
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
+        retry.Headers.Contains("X-Idempotent-Replayed").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Oversized_key_is_rejected_with_a_400_on_every_store()
+    {
+        var key = $"{UniqueKey()}{new string('k', 300)}";
+
+        var response = await _client!.SendAsync(Post("/scoped", key, "A"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -208,6 +232,12 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
 
         context.Response.StatusCode = StatusCodes.Status201Created;
         await context.Response.WriteAsync($$"""{"result":"handled:{{who}}"}""");
+    }
+
+    private static async Task CreatedHandlerAsync(HttpContext context)
+    {
+        context.Response.StatusCode = StatusCodes.Status201Created;
+        await context.Response.WriteAsync("""{"created":true}""");
     }
 
     private async Task AbortingHandlerAsync(HttpContext context)

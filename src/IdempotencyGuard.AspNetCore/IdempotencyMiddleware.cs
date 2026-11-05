@@ -87,6 +87,14 @@ public class IdempotencyMiddleware
             return;
         }
 
+        if (!IsValidKey(rawKey))
+        {
+            // The key is left out of the error: it's client input that failed validation.
+            await _responseWriter.WriteErrorAsync(httpContext, 400, IdempotencyErrorKind.InvalidKey,
+                $"{_options.HeaderName} must not contain control characters or exceed {_options.MaxKeyLength} characters");
+            return;
+        }
+
         if (!TryResolveScopeSegment(httpContext, idempotentAttr, policy, out var scopeSegment))
         {
             await _responseWriter.WriteErrorAsync(httpContext, 403, IdempotencyErrorKind.MissingScope,
@@ -167,6 +175,10 @@ public class IdempotencyMiddleware
     }
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
+
+    private bool IsValidKey(string rawKey) =>
+        (_options.MaxKeyLength <= 0 || rawKey.Length <= _options.MaxKeyLength)
+        && !rawKey.Any(char.IsControl);
 
     /// <summary>
     /// A guard that runs before authorization replays stored responses to callers who would

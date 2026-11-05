@@ -73,6 +73,7 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 
 ### Behaviour
 
+- Keys longer than `MaxKeyLength` (200 characters by default), or containing control characters, are rejected with a 400. Previously, a key too long for SQL Server's 256-character column caused a 500, and the other stores accepted any length. If your clients send longer keys, raise `MaxKeyLength`. On SQL Server the limit is 256 characters including any scope (33) and prefix, so the default leaves room for a prefix of up to 23.
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope.
 - A request that waited under `WaitThenReplay` now takes over if the original request fails, rather than timing out with a 409.
 - A client disconnecting no longer cancels the response write. On the SQL stores, this used to discard the response and release the claim, so the retry ran the handler a second time.

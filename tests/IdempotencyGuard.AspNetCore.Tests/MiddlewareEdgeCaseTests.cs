@@ -185,6 +185,69 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
         leakedTags.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Key_at_the_maximum_length_is_accepted()
+    {
+        var client = await StartAsync(CreatedHandler);
+
+        var response = await client.SendAsync(Post(new string('k', 200)));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task Key_over_the_maximum_length_is_rejected_without_running_the_handler_or_echoing_the_key()
+    {
+        object? problemKey = "not called";
+        var client = await StartAsync(CreatedHandler, options => options.ErrorResponseFactory = problem =>
+        {
+            problemKey = problem.IdempotencyKey;
+            return new { kind = problem.Kind.ToString() };
+        });
+
+        var response = await client.SendAsync(Post(new string('k', 201)));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(nameof(IdempotencyErrorKind.InvalidKey));
+        problemKey.Should().BeNull();
+        _handlerCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MaxKeyLength_can_be_configured()
+    {
+        var client = await StartAsync(CreatedHandler, options => options.MaxKeyLength = 8);
+
+        (await client.SendAsync(Post(new string('k', 8)))).StatusCode.Should().Be(HttpStatusCode.Created);
+        (await client.SendAsync(Post(new string('k', 9)))).StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task MaxKeyLength_of_zero_disables_the_check()
+    {
+        var client = await StartAsync(CreatedHandler, options => options.MaxKeyLength = 0);
+
+        var response = await client.SendAsync(Post(new string('k', 500)));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task Key_with_a_control_character_is_rejected()
+    {
+        var client = await StartAsync(CreatedHandler);
+        var request = new HttpRequestMessage(HttpMethod.Post, "/payments")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", "abc\tdef").Should().BeTrue();
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        _handlerCallCount.Should().Be(0);
+    }
+
     private static string? CallerScope(HttpContext context) =>
         context.User.FindFirstValue(ClaimTypes.NameIdentifier);
 
