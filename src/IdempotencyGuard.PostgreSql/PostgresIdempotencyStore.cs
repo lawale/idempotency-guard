@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Options;
@@ -330,9 +332,18 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             await using var conn = new NpgsqlConnection(_connectionString);
             await conn.OpenAsync(ct);
 
-            // ALTER comes before CREATE INDEX on purpose: instances starting together then
-            // queue for the exclusive lock, rather than each holding the index's share lock
-            // while waiting to upgrade it, which would deadlock.
+            await using var transaction = await conn.BeginTransactionAsync(ct);
+
+            // CREATE TABLE IF NOT EXISTS isn't safe against itself: instances starting together
+            // can all see no table, and the losers fail on a unique index in the catalog. This
+            // lock makes them take turns, and is released when the transaction ends.
+            await using (var lockCmd = conn.CreateCommand())
+            {
+                lockCmd.CommandText = "SELECT pg_advisory_xact_lock(@lock_key)";
+                lockCmd.Parameters.AddWithValue("lock_key", TableCreationLockKey());
+                await lockCmd.ExecuteNonQueryAsync(ct);
+            }
+
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
                 CREATE TABLE IF NOT EXISTS {FullTableName} (
@@ -354,6 +365,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                     ON {FullTableName} (expires_at);";
 
             await cmd.ExecuteNonQueryAsync(ct);
+            await transaction.CommitAsync(ct);
             _tableCreated = true;
         }
         finally
@@ -361,6 +373,9 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             _tableCreationLock.Release();
         }
     }
+
+    private long TableCreationLockKey() =>
+        BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(FullTableName)));
 
     private static IdempotencyEntry ReadEntry(NpgsqlDataReader reader, string key)
     {

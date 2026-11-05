@@ -36,7 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Requests waiting under `WaitThenReplay` timed out with a 409 when the original failed. They now take over
 - In-memory store: an entry past its `ResponseTtl` returned a 409 or 422 instead of being claimable, and a response stored after its claim was purged made every retry return a 422
 - An action's `[Idempotent]` attribute discarded its controller's settings. They now merge, and the most specific value wins
-- Concurrent first requests no longer race to create the SQL stores' tables within an instance
+- Concurrent first requests no longer race to create or upgrade the SQL stores' tables, within an instance or across instances starting together
 - Long keys caused a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). Stores now see a fixed-length digest, and keys over `MaxKeyLength` or containing control characters get a 400
 - SQL Server's default collation treated keys differing only by case as the same key, unlike the other stores
 - The PostgreSQL and SQL Server READMEs listed the wrong name for the fingerprint column
