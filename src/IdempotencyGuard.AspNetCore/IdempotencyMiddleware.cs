@@ -2,6 +2,7 @@ using System.Diagnostics;
 using IdempotencyGuard.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -300,8 +301,14 @@ public class IdempotencyMiddleware
         {
             using var responseBody = new MemoryStream();
             httpContext.Response.Body = responseBody;
+            var bodyFeature = httpContext.Features.Get<IHttpResponseBodyFeature>()!;
 
             await _next(httpContext);
+
+            // Bytes still in BodyWriter would be lost when Response.Body is restored, and the
+            // truncated response stored. Unlike a flush, this doesn't create a writer if the
+            // handler never used one.
+            await bodyFeature.CompleteAsync();
 
             responseBody.Position = 0;
 

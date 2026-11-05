@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The `idempotency.result` span tag now reports how the request ended, and can be `cancelled`
 
 ### Fixed
+- Bytes written through `Response.BodyWriter` without a flush were lost, and the truncated response was stored and replayed
 - `MaxFingerprintBodySize = 0` read the whole request body into memory with no limit, when it's meant to skip the body
 - A request that outlived its claim could overwrite or release the claim of the request that took over, on every store. Its response could then be replayed for a different payload
 - A client disconnecting after the handler ran could discard the response and release the claim on the SQL stores, so the retry ran the handler again
