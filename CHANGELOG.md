@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-05
 **Breaking release. See the [2.0 upgrade guide](docs/upgrading-to-2.0.md); some of these changes can affect a live system during the rollout.**
 
 ### Security
@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `idempotency.replays.total` no longer counts a replay that found no response and returned a 409
 - `idempotency.claims.released` has a `reason` tag (`failure`, `response_too_large`, `should_store_response`), and no longer counts a release when the claim was already gone
 - The `idempotency.result` span tag now reports how the request ended, and can be `cancelled`
+- NuGet packages now carry an icon, link to the GitHub repo instead of the author's site, and point their release notes at this changelog
+- Package descriptions lead with "Idempotency-Key middleware for ASP.NET Core", and tags now include `idempotency-key` (plus `minimal-api` on `IdempotencyGuard.AspNetCore`)
 
 ### Fixed
 - Bytes written through `Response.BodyWriter` without a flush were lost, and the truncated response was stored and replayed
@@ -57,16 +59,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs/stability-and-performance.md` documenting the measured overhead and the limits of what the stress suite proves
 - Stress suite runs in the release workflow, before packages publish. A manual `stress` workflow reruns it at ten times the load and publishes benchmark results
 
-### Changed
-- NuGet packages now carry an icon, link to the GitHub repo instead of the author's site, and point their release notes at this changelog
-- Package descriptions lead with "Idempotency-Key middleware for ASP.NET Core", and tags now include `idempotency-key` (plus `minimal-api` on `IdempotencyGuard.AspNetCore`)
-
 ## [1.3.0] - 2026-04-26
 ### Added
 - OpenTelemetry tracing for store operations and cleanup through the `IdempotencyGuard` activity source (`IdempotencyDiagnostics.ActivitySourceName`)
 
 ### Changed
-- `IdempotencyGuard.Redis` now owns Redis connection lifecycle internally instead of registering or reusing `IConnectionMultiplexer`
+- **Breaking:** `IdempotencyGuard.Redis` now owns Redis connection lifecycle internally instead of registering or reusing `IConnectionMultiplexer`. A multiplexer you registered is no longer used, none is registered for other code to resolve, and the `RedisIdempotencyStore` constructor no longer accepts one
 - Redis connections are created lazily, reconnect on demand, force `AbortOnConnectFail=false`, and throttle reconnect attempts via `RedisIdempotencyOptions.MinimumReconnectInterval`
 - The middleware passes `HttpContext.RequestAborted` to store claim, read and write calls; claim release deliberately ignores it so a disconnect can't strand a claim
 - Redis connections now open asynchronously
