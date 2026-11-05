@@ -44,14 +44,15 @@ When `AutoCreateTable = true`, the store creates the following table on first us
 ```sql
 CREATE TABLE [IdempotencyEntries] (
     [Key]            NVARCHAR(256)  NOT NULL PRIMARY KEY,
-    RequestFingerprint NVARCHAR(128)  NOT NULL,
+    Fingerprint      NVARCHAR(128)  NOT NULL,
     State            NVARCHAR(20)   NOT NULL,
     ClaimedAtUtc     DATETIME2      NOT NULL,
     CompletedAtUtc   DATETIME2      NULL,
     ExpiresAtUtc     DATETIME2      NOT NULL,
     StatusCode       INT            NULL,
     HeadersJson      NVARCHAR(MAX)  NULL,
-    ResponseBody     VARBINARY(MAX) NULL
+    ResponseBody     VARBINARY(MAX) NULL,
+    ClaimToken       NVARCHAR(64)   NULL
 );
 ```
 

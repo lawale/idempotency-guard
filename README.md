@@ -48,6 +48,10 @@ builder.Services.AddIdempotencyGuard(options =>
 builder.Services.AddIdempotencyGuardInMemoryStore();  // Dev/testing only
 
 var app = builder.Build();
+
+// The guard must come after authorization, or it replays stored responses to unauthorized callers.
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseIdempotencyGuard();
 ```
 
@@ -129,6 +133,12 @@ builder.Services.AddIdempotencyGuard(options =>
     // Set to 0 to skip body hashing entirely.
     options.MaxFingerprintBodySize = 1_048_576;
 
+    // Who a key belongs to. Set this on any API with more than one caller.
+    options.KeyScope = context => context.User.FindFirstValue("sub");
+
+    // Whether to store a response, by status code (default: store everything, including 5xx)
+    options.ShouldStoreResponse = status => status < 500;
+
     // Prefix prepended to every idempotency key before it reaches the store.
     // Useful for namespacing by environment or tenant.
     options.KeyPrefix = "production:";
@@ -162,6 +172,25 @@ Or use the `[Idempotent]` attribute for controller-based APIs:
 [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
 public IActionResult CreatePayment(PaymentRequest request) { ... }
 ```
+
+Settings merge across a controller and its actions, and the most specific value wins. An action can change a TTL without losing the controller's policy.
+
+### Named Policies
+
+Attributes only accept constants, so anything that needs a delegate lives in a named policy. Anything a policy leaves unset falls back to the global value:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.ShouldStoreResponse = status => status < 500;   // global default
+    options.AddPolicy("cache-all", p => p.ShouldStoreResponse = _ => true);
+});
+
+[Idempotent(Policy = "cache-all")]                                  // controller or action
+app.MapPost(...).RequireIdempotency(o => o.Policy = "cache-all");   // minimal API
+```
+
+An endpoint that names an unregistered policy fails at startup.
 
 ### Selective Fingerprinting
 
@@ -253,6 +282,68 @@ builder.Services.AddIdempotencyGuard(options =>
 ```
 
 Built-in deny list: `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Set-Cookie`, `WWW-Authenticate`, `Proxy-Connection`, `Alt-Svc`, `Server`, `Date`.
+
+## Scoping Keys to Callers
+
+**By default, every caller shares one key space.** Any caller who presents a key gets the response stored under it, so on an API with more than one caller you should set a scope. The app logs a warning at startup until you do, which `SuppressUnscopedKeysWarning` turns off if a single trusted caller owns the key space.
+
+The library doesn't guess the identifier, because that depends on your system: `sub` is meaningless for API keys, and a tenant may be the right boundary rather than a user.
+
+```csharp
+options.KeyScope = context => context.User.FindFirstValue("sub");
+```
+
+A scope of `null` rejects the request with a 403 rather than falling back to the shared key space. The scope is hashed before it reaches the store, so caller identifiers stay out of store keys.
+
+**Scope by whoever generates and retries the key.** When that differs by endpoint, as in an app serving both users and other services, use one policy for each:
+
+```csharp
+options.AddPolicy("user",    p => p.KeyScope = ctx => ctx.User.FindFirstValue("sub"));
+options.AddPolicy("service", p => p.KeyScope = ctx => ctx.User.FindFirstValue("client_id"));
+options.AddPolicy("webhook", p => p.KeyScope = _ => "stripe");
+```
+
+The same identifier stays separate under different policies. If one endpoint accepts both kinds of caller, use a single resolver and prefix the values so user `abc` and client `abc` can't collide:
+
+```csharp
+p.KeyScope = ctx =>
+    ctx.User.FindFirstValue("sub") is { } sub ? $"user:{sub}"
+    : ctx.User.FindFirstValue("client_id") is { } id ? $"client:{id}"
+    : null;
+```
+
+Things to watch for:
+
+- **API keys:** scope by the client or account ID, not the key itself. Otherwise a retry that spans a key rotation runs the handler again.
+- **A service acting for a user:** scope by the service, because it's the one retrying.
+- **Webhooks:** verify signatures before the guard runs. If the check is in the handler, anyone can replay a stored response without a valid signature.
+- **Endpoints with no policy:** these use the global `KeyScope`. In a mixed app, set a global resolver so a forgotten attribute is rejected rather than left unscoped.
+- **Enabling scoping on a live system:** this changes every key, including downstream keys. See the [upgrade guide](docs/upgrading-to-2.0.md).
+
+## Middleware Order
+
+The guard must run after authorization:
+
+```csharp
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseIdempotencyGuard();
+```
+
+Run earlier than that, it would replay stored responses to callers who should be rejected, and it couldn't see identities from a non-default authentication scheme, which only `UseAuthorization` resolves. On an endpoint that requires authorization, the guard throws if authorization hasn't run yet.
+
+## Server Errors
+
+A handler that returns a 5xx without throwing has its response stored and replayed, like any other response. To let retries run the handler again instead, set `ShouldStoreResponse`, globally or in a [policy](#named-policies):
+
+```csharp
+options.ShouldStoreResponse = status => status < 500;
+```
+
+When it returns `false`, the claim is released and the client still gets the original response.
+
+**Be careful with this on endpoints that have side effects.** If the handler charged a customer and then returned a 500, the retry charges them again, unless the downstream call used a [downstream key](#downstream-key-generation).
 
 ## Key Prefixing
 
@@ -388,11 +479,17 @@ Two identical requests arrive simultaneously. The first claims the key and proce
 ### Crashed Process
 A process claims a key, then crashes. The claim TTL expires, allowing retries to proceed with a new claim.
 
+### Handler Outlives Its Claim
+A handler runs past `ClaimTtl` and a retry takes over the key. Each claim carries a token, so when the first handler finishes it can't overwrite or release the new claim, and its response isn't stored. Both handlers will have run, so use a [downstream key](#downstream-key-generation) for anything with side effects, and raise `ClaimTtl` if `idempotency.claims.lost` is above zero.
+
+### Original Request Fails
+A request is waiting on a concurrent request that fails and releases its claim. The waiting request takes over and runs the handler rather than timing out.
+
 ### Payload Mismatch
 A client accidentally reuses an idempotency key with a different request body. The middleware detects the SHA256 fingerprint mismatch and returns 422.
 
 ### Upstream Timeout, Downstream Success
-The client times out waiting for your API, but the payment provider call succeeds. The middleware stores the response despite the closed connection. When the client retries, it receives the correct cached response.
+The client times out waiting for your API, but the payment provider call succeeds. The middleware stores the response despite the closed connection, because the write isn't tied to the request's cancellation token. When the client retries, it receives the correct cached response.
 
 ## Observability
 
@@ -404,6 +501,7 @@ Built-in [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/) metric
 | `idempotency.replays.total` | Counter | Requests served from cache |
 | `idempotency.claims.total` | Counter | New claims created |
 | `idempotency.claims.released` | Counter | Claims released due to failure |
+| `idempotency.claims.lost` | Counter | Responses not stored because the handler outlived `ClaimTtl` and the claim was taken over |
 | `idempotency.conflicts.total` | Counter | 409 responses (concurrent in-progress) |
 | `idempotency.fingerprint_mismatches.total` | Counter | 422 responses (payload mismatch) |
 | `idempotency.store.latency` | Histogram | Store operation latency (ms) |
@@ -420,12 +518,18 @@ builder.Services.AddOpenTelemetry()
     });
 ```
 
+Logs and spans identify a request by `KeyHash` / `idempotency.key_hash`, a truncated SHA-256 of the store key. The raw key can replay a stored response, so it isn't recorded.
+
 ## Health Check
 
 ```csharp
 builder.Services.AddHealthChecks()
     .AddCheck<IdempotencyStoreHealthCheck>("idempotency-store");
 ```
+
+## Upgrading
+
+See the [2.0 upgrade guide](docs/upgrading-to-2.0.md). Some of its changes can affect a live system during the rollout.
 
 ## Stability and Performance
 

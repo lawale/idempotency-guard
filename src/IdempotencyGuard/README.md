@@ -9,7 +9,6 @@ Core abstractions and in-memory store for the [IdempotencyGuard](https://github.
 - **`IDownstreamKeyGenerator`** / **`IIdempotencyContext`** — deterministic key generation for downstream service calls
 - **`InMemoryIdempotencyStore`** — in-memory store for development and testing
 - **`RequestFingerprint`** — SHA256-based request fingerprinting with JSON normalisation
-- **`IdempotencyOptions`** — full configuration model
 - **Built-in metrics** via `System.Diagnostics.Metrics` under the `IdempotencyGuard` meter
 
 ## When to use this package directly
@@ -34,12 +33,14 @@ public class MyCustomStore : IIdempotencyStore
 {
     public Task<ClaimResult> TryClaimAsync(string key, string fingerprint, TimeSpan claimTtl, CancellationToken ct = default)
     {
-        // Atomically claim the key or return the existing state
+        // Atomically claim the key or return the existing state. Treat expired entries as absent.
+        // On success, persist a new unique token and return new ClaimResult.Claimed(token).
     }
 
-    public Task SetResponseAsync(string key, IdempotentResponse response, TimeSpan responseTtl, CancellationToken ct = default)
+    public Task<bool> SetResponseAsync(string key, string claimToken, IdempotentResponse response, TimeSpan responseTtl, CancellationToken ct = default)
     {
-        // Store the response for replay
+        // Atomically store the response, only if the entry is still claimed under claimToken.
+        // Return whether it was stored.
     }
 
     public Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)
@@ -47,9 +48,10 @@ public class MyCustomStore : IIdempotencyStore
         // Retrieve a cached response
     }
 
-    public Task ReleaseClaimAsync(string key, CancellationToken ct = default)
+    public Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default)
     {
-        // Release a claim after processing failure
+        // Atomically remove the entry, only if it is still claimed under claimToken.
+        // Return whether it was removed.
     }
 }
 ```

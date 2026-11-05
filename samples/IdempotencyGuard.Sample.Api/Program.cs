@@ -16,6 +16,11 @@ builder.Services.AddIdempotencyGuard(options =>
     // Cap request body bytes used for fingerprint hashing (default: 1 MB)
     options.MaxFingerprintBodySize = 1_048_576;
 
+    // This sample has no authentication, so one caller owns the key space. On an API with
+    // more than one caller, set a scope instead, e.g.
+    // options.KeyScope = context => context.User.FindFirstValue("sub");
+    options.SuppressUnscopedKeysWarning = true;
+
     // Namespace keys by environment to prevent collisions across deployments
     options.KeyPrefix = builder.Environment.IsProduction() ? "prod:" : "dev:";
 
@@ -29,6 +34,7 @@ builder.Services.AddIdempotencyGuard(options =>
             IdempotencyErrorKind.FingerprintMismatch => "Payload Mismatch",
             IdempotencyErrorKind.Conflict => "Request In Progress",
             IdempotencyErrorKind.Timeout => "Request Timed Out",
+            IdempotencyErrorKind.MissingScope => "Unknown Caller",
             _ => "Idempotency Error"
         },
         status = problem.StatusCode,
@@ -49,6 +55,7 @@ builder.Services.AddIdempotencyGuardInMemoryStore();
 
 var app = builder.Build();
 
+// With authentication, UseAuthentication() and UseAuthorization() must come before this.
 app.UseIdempotencyGuard();
 
 app.MapGet("/", () => "IdempotencyGuard Sample API — POST to /payments or /refunds with an Idempotency-Key header");
