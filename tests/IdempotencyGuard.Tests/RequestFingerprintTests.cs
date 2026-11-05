@@ -355,4 +355,17 @@ public class RequestFingerprintTests
 
         numberHash.Should().NotBe(textHash);
     }
+
+    [Fact]
+    public void Duplicate_json_property_hashes_as_its_last_value_matching_what_the_handler_deserializes()
+    {
+        var duplicated = Encoding.UTF8.GetBytes("""{"amount":1,"amount":2}""");
+        var lastValue = Encoding.UTF8.GetBytes("""{"amount":2}""");
+        var firstValue = Encoding.UTF8.GetBytes("""{"amount":1}""");
+
+        var hash = RequestFingerprint.Compute("POST", "/payments", duplicated);
+
+        hash.Should().Be(RequestFingerprint.Compute("POST", "/payments", lastValue));
+        hash.Should().NotBe(RequestFingerprint.Compute("POST", "/payments", firstValue));
+    }
 }
