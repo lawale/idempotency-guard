@@ -222,12 +222,14 @@ public class IdempotencyMiddleware
                         : responseBuffer.AsSpan().ToArray()
                 };
 
+                // Deliberately not cancellable. The handler's side effects have already happened,
+                // so a client hanging up now must not lose the response that makes retries safe.
                 bool stored;
                 var setTs = Stopwatch.GetTimestamp();
                 using (IdempotencyActivitySource.StartStoreActivity("set_response", request.Key))
                 {
                     stored = await _store.SetResponseAsync(
-                        request.Key, claimToken, idempotentResponse, request.ResponseTtl, requestAborted);
+                        request.Key, claimToken, idempotentResponse, request.ResponseTtl, CancellationToken.None);
                 }
                 RecordStoreLatency(setTs, "set_response");
                 claimSettled = true;
