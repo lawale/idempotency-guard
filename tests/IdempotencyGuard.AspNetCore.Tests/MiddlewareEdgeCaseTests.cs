@@ -102,7 +102,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     [Fact]
     public async Task Different_user_with_same_key_and_body_does_not_receive_the_first_users_response()
     {
-        var client = await StartAsync(EchoCallerHandler);
+        var client = await StartAsync(EchoCallerHandler, options => options.KeyScope = CallerScope);
         var key = NewKey();
 
         await client.SendAsync(Post(key, user: "alice"));
@@ -116,7 +116,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     [Fact]
     public async Task Different_user_with_same_key_and_different_body_is_not_told_the_key_exists()
     {
-        var client = await StartAsync(EchoCallerHandler);
+        var client = await StartAsync(EchoCallerHandler, options => options.KeyScope = CallerScope);
         var key = NewKey();
 
         await client.SendAsync(Post(key, """{"amount":1}""", user: "alice"));
@@ -128,7 +128,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     [Fact]
     public async Task Same_user_retry_still_replays_when_keys_are_scoped_per_user()
     {
-        var client = await StartAsync(EchoCallerHandler);
+        var client = await StartAsync(EchoCallerHandler, options => options.KeyScope = CallerScope);
         var key = NewKey();
 
         await client.SendAsync(Post(key, user: "alice"));
@@ -184,6 +184,9 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
 
         leakedTags.Should().BeEmpty();
     }
+
+    private static string? CallerScope(HttpContext context) =>
+        context.User.FindFirstValue(ClaimTypes.NameIdentifier);
 
     private async Task CreatedHandler(HttpContext context)
     {

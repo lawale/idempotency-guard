@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="IdempotencyGuard.AspNetCore.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\IdempotencyGuard\IdempotencyGuard.csproj" />
   </ItemGroup>
 

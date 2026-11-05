@@ -55,9 +55,13 @@ public class IdempotencyMiddleware
             }
         }
 
-        // Read [Idempotent] attribute from endpoint metadata
         var endpoint = httpContext.GetEndpoint();
-        var idempotentAttr = endpoint?.Metadata.GetMetadata<IdempotentAttribute>();
+
+        // Read [Idempotent] attributes from endpoint metadata
+        var idempotentAttr = endpoint is null
+            ? null
+            : IdempotentAttribute.Merge(endpoint.Metadata.GetOrderedMetadata<IdempotentAttribute>());
+        var policy = ResolvePolicy(idempotentAttr);
 
         var rawKey = httpContext.Request.Headers[_options.HeaderName].FirstOrDefault();
 
@@ -77,14 +81,19 @@ public class IdempotencyMiddleware
             return;
         }
 
+        if (!TryResolveScopeSegment(httpContext, idempotentAttr, policy, out var scopeSegment))
+        {
+            await _responseWriter.WriteErrorAsync(httpContext, 403, IdempotencyErrorKind.MissingScope,
+                "Unable to determine the caller this idempotency key belongs to", rawKey);
+            return;
+        }
+
         var keyPrefix = httpContext.Items.TryGetValue(_options.KeyPrefixItemKey, out var prefixObj)
                 && prefixObj is string perRequestPrefix
             ? perRequestPrefix
             : _options.KeyPrefix;
 
-        var idempotencyKey = string.IsNullOrEmpty(keyPrefix)
-            ? rawKey
-            : $"{keyPrefix}{rawKey}";
+        var idempotencyKey = string.Concat(keyPrefix, scopeSegment, rawKey);
 
         // Per-endpoint TTL overrides
         var claimTtl = idempotentAttr?.ClaimTtlSeconds > 0
@@ -107,11 +116,13 @@ public class IdempotencyMiddleware
         var result = await _fingerprintBuilder.ComputeAsync(httpContext, idempotentAttr);
 
         var request = new GuardedRequest(
+            rawKey,
             idempotencyKey,
             keyHash,
             result.Fingerprint,
             claimTtl,
-            responseTtl);
+            responseTtl,
+            policy?.ShouldStoreResponse ?? _options.ShouldStoreResponse);
 
         var claimResult = await TryClaimAsync(request, requestAborted);
 
@@ -150,6 +161,51 @@ public class IdempotencyMiddleware
     }
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
+
+    private IdempotencyPolicy? ResolvePolicy(IdempotentAttribute? attribute)
+    {
+        if (attribute?.Policy is not { } name)
+        {
+            return null;
+        }
+
+        return _options.TryGetPolicy(name, out var policy)
+            ? policy
+            : throw new InvalidOperationException(
+                $"Idempotency policy '{name}' is not registered. Register it with IdempotencyOptions.AddPolicy.");
+    }
+
+    /// <summary>
+    /// Builds the part of the store key that isolates one caller from another. The scope is
+    /// hashed to a fixed length, so a scope can't run into the client's key and collide, and
+    /// caller identifiers stay out of the store. A policy's own resolver also hashes the
+    /// policy name, so user "abc" and service "abc" stay apart under different policies.
+    /// </summary>
+    /// <returns><c>false</c> if the resolver could not determine a scope.</returns>
+    private bool TryResolveScopeSegment(
+        HttpContext httpContext,
+        IdempotentAttribute? attribute,
+        IdempotencyPolicy? policy,
+        out string? segment)
+    {
+        segment = null;
+
+        var resolver = policy?.KeyScope ?? _options.KeyScope;
+        if (resolver is null)
+        {
+            return true;
+        }
+
+        var scope = resolver(httpContext);
+        if (scope is null)
+        {
+            return false;
+        }
+
+        var scopeIdentity = policy?.KeyScope is not null ? $"{attribute!.Policy}\0{scope}" : scope;
+        segment = $"{IdempotencyKeyHash.Compute(scopeIdentity)}:";
+        return true;
+    }
 
     private async Task<ClaimResult> TryClaimAsync(GuardedRequest request, CancellationToken requestAborted)
     {
@@ -204,6 +260,14 @@ public class IdempotencyMiddleware
                 _logger.LogWarning(
                     "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
                     request.KeyHash, _options.MaxResponseBodySize);
+            }
+            else if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
+            {
+                claimSettled = true;
+                await ReleaseClaimAsync(request, claimToken);
+                _logger.LogInformation(
+                    "Response with status {StatusCode} for key {KeyHash} not stored, claim released",
+                    statusCode, request.KeyHash);
             }
             else
             {
@@ -307,7 +371,7 @@ public class IdempotencyMiddleware
         if (response is null)
         {
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
-                "Request is being processed", request.Key);
+                "Request is being processed", request.RawKey);
             return;
         }
 
@@ -324,7 +388,7 @@ public class IdempotencyMiddleware
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
-                "Request with this idempotency key is currently being processed", request.Key);
+                "Request with this idempotency key is currently being processed", request.RawKey);
             return;
         }
 
@@ -371,7 +435,7 @@ public class IdempotencyMiddleware
         }
 
         await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
-            "Timed out waiting for concurrent request to complete", request.Key);
+            "Timed out waiting for concurrent request to complete", request.RawKey);
     }
 
     private async Task WriteFingerprintMismatchAsync(
@@ -385,7 +449,7 @@ public class IdempotencyMiddleware
             request.KeyHash, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
         await _responseWriter.WriteErrorAsync(httpContext, 422, IdempotencyErrorKind.FingerprintMismatch,
             "Idempotency key has already been used with a different request payload",
-            request.Key);
+            request.RawKey);
     }
 
     private static void RecordStoreLatency(long startTimestamp, string operation)
@@ -396,9 +460,11 @@ public class IdempotencyMiddleware
     }
 
     private sealed record GuardedRequest(
+        string RawKey,
         string Key,
         string KeyHash,
         string Fingerprint,
         TimeSpan ClaimTtl,
-        TimeSpan ResponseTtl);
+        TimeSpan ResponseTtl,
+        Func<int, bool>? ShouldStoreResponse);
 }

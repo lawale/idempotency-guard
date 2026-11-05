@@ -1,7 +1,11 @@
+using Microsoft.AspNetCore.Http;
+
 namespace IdempotencyGuard;
 
 public class IdempotencyOptions
 {
+    private readonly Dictionary<string, IdempotencyPolicy> _policies = new(StringComparer.Ordinal);
+
     public string HeaderName { get; set; } = "Idempotency-Key";
 
     /// <summary>
@@ -40,7 +44,7 @@ public class IdempotencyOptions
     public string? KeyPrefix { get; set; }
 
     /// <summary>
-    /// The <see cref="Microsoft.AspNetCore.Http.HttpContext.Items"/> key used to read
+    /// The <see cref="HttpContext.Items"/> key used to read
     /// a per-request key prefix override. When the item is present and is a non-null
     /// <see cref="string"/>, it takes precedence over <see cref="KeyPrefix"/>.
     /// Default: <c>"IdempotencyKeyPrefix"</c>.
@@ -52,13 +56,63 @@ public class IdempotencyOptions
     /// </summary>
     public const string DefaultKeyPrefixItemKey = "IdempotencyKeyPrefix";
 
+    /// <summary>
+    /// Resolves who a key belongs to, normally whoever generates and retries it: a user ID,
+    /// or a client or account ID for service callers. Keys from different scopes never
+    /// collide, so one caller can't replay another's response.
+    /// Returning <c>null</c> rejects the request with a 403 rather than falling back to the
+    /// shared key space. Default: <c>null</c> (no scoping, every caller shares one key space).
+    /// A policy's <see cref="IdempotencyPolicy.KeyScope"/> takes precedence over this value.
+    /// </summary>
+    public Func<HttpContext, string?>? KeyScope { get; set; }
+
+    /// <summary>
+    /// Decides from the status code whether a response is stored and replayed. When it
+    /// returns <c>false</c> the claim is released and a retry runs the handler again.
+    /// Default: <c>null</c> (store every response, including 5xx).
+    /// A policy's <see cref="IdempotencyPolicy.ShouldStoreResponse"/> takes precedence over this value.
+    /// </summary>
+    public Func<int, bool>? ShouldStoreResponse { get; set; }
+
+    /// <summary>
+    /// Silences the startup warning logged when no <see cref="KeyScope"/> is configured.
+    /// Set this when a single trusted caller owns the whole key space.
+    /// </summary>
+    public bool SuppressUnscopedKeysWarning { get; set; }
+
+    /// <summary>
+    /// Registers a named policy that endpoints select with
+    /// <see cref="AspNetCore.IdempotentAttribute.Policy"/>. Anything the policy leaves
+    /// unset falls back to the global value on these options.
+    /// </summary>
+    public IdempotencyOptions AddPolicy(string name, Action<IdempotencyPolicy> configure)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var policy = new IdempotencyPolicy();
+        configure(policy);
+
+        if (!_policies.TryAdd(name, policy))
+        {
+            throw new InvalidOperationException($"An idempotency policy named '{name}' is already registered.");
+        }
+
+        return this;
+    }
+
+    internal bool TryGetPolicy(string name, out IdempotencyPolicy? policy) =>
+        _policies.TryGetValue(name, out policy);
+
+    internal bool AnyPolicyDefinesKeyScope => _policies.Values.Any(policy => policy.KeyScope is not null);
+
     public bool Enabled { get; set; } = true;
 
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
 
     /// <summary>
     /// Custom error response factory. When set, the middleware calls this to produce the
-    /// JSON body for all error responses (400, 409, 422) instead of the default
+    /// JSON body for all error responses (400, 403, 409, 422) instead of the default
     /// <c>{"error":"..."}</c> format. The returned object is serialized with System.Text.Json.
     /// </summary>
     public Func<IdempotencyProblem, object>? ErrorResponseFactory { get; set; }
@@ -81,6 +135,19 @@ public class IdempotencyOptions
     /// Configuration for the background expired-entry cleanup service.
     /// </summary>
     public CleanupOptions Cleanup { get; set; } = new();
+}
+
+/// <summary>
+/// Per-endpoint overrides selected by name. Unset values fall back to the matching
+/// value on <see cref="IdempotencyOptions"/>.
+/// </summary>
+public sealed class IdempotencyPolicy
+{
+    /// <inheritdoc cref="IdempotencyOptions.KeyScope"/>
+    public Func<HttpContext, string?>? KeyScope { get; set; }
+
+    /// <inheritdoc cref="IdempotencyOptions.ShouldStoreResponse"/>
+    public Func<int, bool>? ShouldStoreResponse { get; set; }
 }
 
 public static class HeaderFilter
@@ -154,7 +221,8 @@ public enum IdempotencyErrorKind
     MissingKey,
     FingerprintMismatch,
     Conflict,
-    Timeout
+    Timeout,
+    MissingScope
 }
 
 public class IdempotencyProblem
