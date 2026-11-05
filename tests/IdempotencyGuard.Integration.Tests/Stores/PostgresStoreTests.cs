@@ -35,6 +35,34 @@ public class PostgresStoreTests : IdempotencyStoreContractTests, IClassFixture<P
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
+    public Task Instances_starting_together_create_the_table() =>
+        InstancesStartingTogetherCanClaimAsync(_ => Task.CompletedTask, NewStore);
+
+    [Fact]
+    public Task Instances_starting_together_upgrade_a_1x_table() =>
+        InstancesStartingTogetherCanClaimAsync(async table =>
+        {
+            await using var conn = new NpgsqlConnection(_fixture.ConnectionString);
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"""
+                CREATE TABLE "public"."{table}" (
+                    key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'claimed',
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ NOT NULL, status_code INT, headers_json TEXT, response_body BYTEA);
+                CREATE INDEX "idx_{table}_expires" ON "public"."{table}" (expires_at);
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }, NewStore);
+
+    private PostgresIdempotencyStore NewStore(string table) => new(Options.Create(new PostgresIdempotencyOptions
+    {
+        ConnectionString = _fixture.ConnectionString,
+        TableName = table,
+        AutoCreateTable = true
+    }));
+
+    [Fact]
     public async Task Table_created_by_1x_is_upgraded_and_its_completed_entries_still_replay()
     {
         var table = $"legacy_{Guid.NewGuid():N}";

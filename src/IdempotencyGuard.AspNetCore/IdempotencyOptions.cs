@@ -27,12 +27,24 @@ public class IdempotencyOptions
 
     public HashSet<string> EnforcedMethods { get; set; } = ["POST", "PUT", "PATCH"];
 
+    /// <summary>
+    /// Largest response body that can be stored, in bytes. A larger response still reaches
+    /// the client, and <see cref="OversizedResponse"/> decides what a retry gets.
+    /// The check runs after the handler finishes, so this doesn't limit how much is buffered.
+    /// Default: 1 MB.
+    /// </summary>
     public int MaxResponseBodySize { get; set; } = 1_048_576;
+
+    /// <summary>
+    /// What a retry gets when the response was too large to store. Default:
+    /// <see cref="OversizedResponseBehavior.RejectRetries"/>.
+    /// </summary>
+    public OversizedResponseBehavior OversizedResponse { get; set; } = OversizedResponseBehavior.RejectRetries;
 
     /// <summary>
     /// Maximum number of request body bytes used for fingerprint hashing.
     /// Bodies larger than this are fingerprinted using only the first N bytes.
-    /// Default: 1 MB. Set to 0 to skip body hashing entirely.
+    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read.
     /// </summary>
     public int MaxFingerprintBodySize { get; set; } = 1_048_576;
 
@@ -90,8 +102,8 @@ public class IdempotencyOptions
     /// Development environment only, like <c>ValidateOnBuild</c>.
     /// <para>
     /// Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the
-    /// first request, so this adds about 1 ms per minimal API endpoint with typed parameters to
-    /// startup. With the check off, an unregistered policy fails each request that uses it with an
+    /// first request, so this adds startup time that grows with the number of endpoints, especially
+    /// minimal APIs with typed parameters. With the check off, an unregistered policy fails each request that uses it with an
     /// <see cref="InvalidOperationException"/> before the handler runs.
     /// </para>
     /// </summary>
@@ -143,7 +155,7 @@ public class IdempotencyOptions
 
     /// <summary>
     /// Custom error response factory. When set, the middleware calls this to produce the
-    /// JSON body for all error responses (400, 403, 409, 422) instead of the default
+    /// JSON body for all error responses (400, 403, 409, 410, 422) instead of the default
     /// <c>{"error":"..."}</c> format. The returned object is serialized with System.Text.Json.
     /// </summary>
     public Func<IdempotencyProblem, object>? ErrorResponseFactory { get; set; }
@@ -179,6 +191,9 @@ public sealed class IdempotencyPolicy
 
     /// <inheritdoc cref="IdempotencyOptions.ShouldStoreResponse"/>
     public Func<int, bool>? ShouldStoreResponse { get; set; }
+
+    /// <inheritdoc cref="IdempotencyOptions.OversizedResponse"/>
+    public OversizedResponseBehavior? OversizedResponse { get; set; }
 }
 
 public static class HeaderFilter
@@ -247,6 +262,25 @@ public enum MissingKeyPolicy
     Reject
 }
 
+/// <summary>
+/// What a retry gets when the response was larger than
+/// <see cref="IdempotencyOptions.MaxResponseBodySize"/>.
+/// </summary>
+public enum OversizedResponseBehavior
+{
+    /// <summary>
+    /// Retries get a 410 with the original status, and the handler doesn't run again. A client
+    /// that lost the response can't get it back. Once <c>ResponseTtl</c> passes the key is free again.
+    /// </summary>
+    RejectRetries,
+
+    /// <summary>
+    /// The claim is released, so a retry runs the handler again. Only for endpoints
+    /// that are safe to rerun.
+    /// </summary>
+    RunHandlerAgain
+}
+
 public enum IdempotencyErrorKind
 {
     MissingKey,
@@ -254,7 +288,8 @@ public enum IdempotencyErrorKind
     Conflict,
     Timeout,
     MissingScope,
-    InvalidKey
+    InvalidKey,
+    ResponseNotReplayable
 }
 
 public class IdempotencyProblem
@@ -263,6 +298,12 @@ public class IdempotencyProblem
     public required IdempotencyErrorKind Kind { get; init; }
     public required string Message { get; init; }
     public string? IdempotencyKey { get; init; }
+
+    /// <summary>
+    /// The status the original request completed with, when <see cref="Kind"/> is
+    /// <see cref="IdempotencyErrorKind.ResponseNotReplayable"/>.
+    /// </summary>
+    public int? OriginalStatusCode { get; init; }
 }
 
 /// <summary>

@@ -19,8 +19,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking:** numbers now hash as numbers, which changes the fingerprint of any JSON body containing one
 - Logs and spans now carry the store key's digest, so a log line leads straight to its row
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope
+- **Breaking:** `FingerprintResult` no longer has a `RequestBody`, which nothing read
+- **Breaking:** a retry of a response over `MaxResponseBodySize` now gets a 410 with the original status, rather than running the handler again. `OversizedResponse = OversizedResponseBehavior.RunHandlerAgain` keeps the old behaviour, globally or per policy
+- `ShouldStoreResponse` is now checked before the response size, so an oversized response it refuses still reruns
+- `idempotency.conflicts.total` now counts 409 responses only, rather than every request that found the key in progress. Waiters that time out now count
+- `idempotency.replays.total` no longer counts a replay that found no response and returned a 409
+- `idempotency.claims.released` has a `reason` tag (`failure`, `response_too_large`, `should_store_response`), and no longer counts a release when the claim was already gone
+- The `idempotency.result` span tag now reports how the request ended, and can be `cancelled`
 
 ### Fixed
+- Bytes written through `Response.BodyWriter` without a flush were lost, and the truncated response was stored and replayed
+- `MaxFingerprintBodySize = 0` read the whole request body into memory with no limit, when it's meant to skip the body
 - A request that outlived its claim could overwrite or release the claim of the request that took over, on every store. Its response could then be replayed for a different payload
 - A client disconnecting after the handler ran could discard the response and release the claim on the SQL stores, so the retry ran the handler again
 - JSON bodies with duplicate property names failed the request with a 500. A repeated name now hashes as its last value, which is what the handler deserializes
@@ -30,7 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Requests waiting under `WaitThenReplay` timed out with a 409 when the original failed. They now take over
 - In-memory store: an entry past its `ResponseTtl` returned a 409 or 422 instead of being claimable, and a response stored after its claim was purged made every retry return a 422
 - An action's `[Idempotent]` attribute discarded its controller's settings. They now merge, and the most specific value wins
-- Concurrent first requests no longer race to create the SQL stores' tables within an instance
+- Concurrent first requests no longer race to create or upgrade the SQL stores' tables, within an instance or across instances starting together
 - Long keys caused a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). Stores now see a fixed-length digest, and keys over `MaxKeyLength` or containing control characters get a 400
 - SQL Server's default collation treated keys differing only by case as the same key, unlike the other stores
 - The PostgreSQL and SQL Server READMEs listed the wrong name for the fingerprint column
@@ -39,8 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup when `ValidateEndpointsOnStartup` is on
 - `ShouldStoreResponse` decides by status code whether a response is stored, globally or per policy. By default every response is stored, including 5xx
 - `MaxKeyLength` limits the keys accepted from clients. The default is 1024, and 0 disables the check
-- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds about 1 ms per minimal API endpoint with typed parameters. It reports unknown policies, and routes left unscoped while others have a scope
+- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds startup time that grows with the number of endpoints. It reports unknown policies, and routes left unscoped while others have a scope
 - `IdempotencyStoreKey.For` computes the store key for a client's key, for debugging
+- `idempotency.responses.oversized` and `idempotency.replays.rejected` counters
 - `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
 - BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size

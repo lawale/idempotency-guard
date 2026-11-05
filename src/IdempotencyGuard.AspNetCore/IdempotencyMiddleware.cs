@@ -2,6 +2,7 @@ using System.Diagnostics;
 using IdempotencyGuard.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +13,12 @@ public class IdempotencyMiddleware
     // AuthorizationMiddleware sets this item when it runs. EndpointMiddleware reads the same
     // item to detect endpoints that have authorization metadata but were never authorized.
     private const string AuthorizationInvokedItemKey = "__AuthorizationMiddlewareWithEndpointInvoked";
+
+    private const string ClaimedResult = "claimed";
+    private const string ReplayedResult = "replayed";
+    private const string ConflictResult = "conflict";
+    private const string FingerprintMismatchResult = "fingerprint_mismatch";
+    private const string NotReplayableResult = "not_replayable";
 
     private readonly RequestDelegate _next;
     private readonly IIdempotencyStore _store;
@@ -149,7 +156,8 @@ public class IdempotencyMiddleware
             result.Fingerprint,
             claimTtl,
             responseTtl,
-            policy?.ShouldStoreResponse ?? _options.ShouldStoreResponse);
+            policy?.ShouldStoreResponse ?? _options.ShouldStoreResponse,
+            policy?.OversizedResponse ?? _options.OversizedResponse);
 
         var claimResult = await TryClaimAsync(request, requestAborted);
 
@@ -157,25 +165,21 @@ public class IdempotencyMiddleware
         switch (claimResult)
         {
             case ClaimResult.Claimed claimed:
-                resultTag = "claimed";
+                resultTag = ClaimedResult;
                 IdempotencyMetrics.ClaimsTotal.Add(1);
                 await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
                 break;
 
             case ClaimResult.Completed:
-                resultTag = "replayed";
-                IdempotencyMetrics.ReplaysTotal.Add(1);
-                await ReplayResponseAsync(httpContext, request, requestAborted);
+                resultTag = await ReplayResponseAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.AlreadyClaimed:
-                resultTag = "conflict";
-                IdempotencyMetrics.ConflictsTotal.Add(1);
-                await HandleConcurrentRequestAsync(httpContext, request, requestAborted);
+                resultTag = await HandleConcurrentRequestAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
-                resultTag = "fingerprint_mismatch";
+                resultTag = FingerprintMismatchResult;
                 await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
                 break;
 
@@ -299,49 +303,73 @@ public class IdempotencyMiddleware
         {
             using var responseBody = new MemoryStream();
             httpContext.Response.Body = responseBody;
+            var bodyFeature = httpContext.Features.Get<IHttpResponseBodyFeature>()!;
 
             await _next(httpContext);
+
+            // Bytes still in BodyWriter would be lost when Response.Body is restored, and the
+            // truncated response stored. Unlike a flush, this doesn't create a writer if the
+            // handler never used one.
+            await bodyFeature.CompleteAsync();
 
             responseBody.Position = 0;
 
             var statusCode = httpContext.Response.StatusCode;
 
-            if (!responseBody.TryGetBuffer(out var responseBuffer)
-                || responseBuffer.Count > _options.MaxResponseBodySize)
+            var oversized = !responseBody.TryGetBuffer(out var responseBuffer)
+                || responseBuffer.Count > _options.MaxResponseBodySize;
+
+            // Checked first: an oversized response that retries are meant to rerun, such as a
+            // 500, shouldn't be turned away for its size.
+            if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
             {
                 claimSettled = true;
-                await ReleaseClaimAsync(request, claimToken);
-                _logger.LogWarning(
-                    "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
-                    request.KeyHash, _options.MaxResponseBodySize);
-            }
-            else if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
-            {
-                claimSettled = true;
-                await ReleaseClaimAsync(request, claimToken);
+                await ReleaseClaimAsync(request, claimToken, "should_store_response");
                 _logger.LogInformation(
                     "Response with status {StatusCode} for key {KeyHash} not stored, claim released",
                     statusCode, request.KeyHash);
             }
+            else if (oversized && request.OversizedResponse == OversizedResponseBehavior.RunHandlerAgain)
+            {
+                IdempotencyMetrics.OversizedResponses.Add(1, new KeyValuePair<string, object?>("behavior", "run_handler_again"));
+                claimSettled = true;
+                await ReleaseClaimAsync(request, claimToken, "response_too_large");
+                _logger.LogWarning(
+                    "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
+                    request.KeyHash, _options.MaxResponseBodySize);
+            }
             else
             {
-                var headers = new Dictionary<string, string[]>();
-                foreach (var header in httpContext.Response.Headers)
+                IdempotentResponse idempotentResponse;
+                if (oversized)
                 {
-                    if (HeaderFilter.ShouldStoreHeader(header.Key, _options))
-                    {
-                        headers[header.Key] = header.Value.ToArray()!;
-                    }
+                    IdempotencyMetrics.OversizedResponses.Add(1, new KeyValuePair<string, object?>("behavior", "reject_retries"));
+                    _logger.LogWarning(
+                        "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), retries will get a 410",
+                        request.KeyHash, _options.MaxResponseBodySize);
+                    idempotentResponse = IdempotencyResponseWriter.CreateNotReplayableMarker(statusCode);
                 }
-
-                var idempotentResponse = new IdempotentResponse
+                else
                 {
-                    StatusCode = statusCode,
-                    Headers = headers,
-                    Body = responseBuffer.Count == responseBuffer.Array!.Length
-                        ? responseBuffer.Array
-                        : responseBuffer.AsSpan().ToArray()
-                };
+                    var headers = new Dictionary<string, string[]>();
+                    foreach (var header in httpContext.Response.Headers)
+                    {
+                        if (HeaderFilter.ShouldStoreHeader(header.Key, _options)
+                            && !IdempotencyResponseWriter.IsMarkerHeader(header.Key))
+                        {
+                            headers[header.Key] = header.Value.ToArray()!;
+                        }
+                    }
+
+                    idempotentResponse = new IdempotentResponse
+                    {
+                        StatusCode = statusCode,
+                        Headers = headers,
+                        Body = responseBuffer.Count == responseBuffer.Array!.Length
+                            ? responseBuffer.Array
+                            : responseBuffer.AsSpan().ToArray()
+                    };
+                }
 
                 // Deliberately not cancellable. The handler's side effects have already happened,
                 // so a client hanging up now must not lose the response that makes retries safe.
@@ -359,7 +387,7 @@ public class IdempotencyMiddleware
                 {
                     _logger.LogInformation(
                         "Idempotent response stored for key {KeyHash}, status {StatusCode}",
-                        request.KeyHash, statusCode);
+                        request.KeyHash, idempotentResponse.StatusCode);
                 }
                 else
                 {
@@ -380,7 +408,7 @@ public class IdempotencyMiddleware
         {
             if (!claimSettled)
             {
-                await ReleaseClaimAsync(request, claimToken);
+                await ReleaseClaimAsync(request, claimToken, "failure");
                 _logger.LogWarning(ex, "Idempotency claim released after failure for key {KeyHash}", request.KeyHash);
             }
 
@@ -392,15 +420,20 @@ public class IdempotencyMiddleware
         }
     }
 
-    private async Task ReleaseClaimAsync(GuardedRequest request, string claimToken)
+    private async Task ReleaseClaimAsync(GuardedRequest request, string claimToken, string reason)
     {
+        bool released;
         var releaseTs = Stopwatch.GetTimestamp();
         using (IdempotencyActivitySource.StartStoreActivity("release", request.KeyHash))
         {
-            await _store.ReleaseClaimAsync(request.StoreKey, claimToken, CancellationToken.None);
+            released = await _store.ReleaseClaimAsync(request.StoreKey, claimToken, CancellationToken.None);
         }
         RecordStoreLatency(releaseTs, "release");
-        IdempotencyMetrics.ClaimsReleased.Add(1);
+
+        if (released)
+        {
+            IdempotencyMetrics.ClaimsReleased.Add(1, new KeyValuePair<string, object?>("reason", reason));
+        }
     }
 
     private async Task<IdempotentResponse?> GetResponseAsync(GuardedRequest request, CancellationToken requestAborted)
@@ -415,7 +448,7 @@ public class IdempotencyMiddleware
         return response;
     }
 
-    private async Task ReplayResponseAsync(
+    private async Task<string> ReplayResponseAsync(
         HttpContext httpContext,
         GuardedRequest request,
         CancellationToken requestAborted)
@@ -424,26 +457,50 @@ public class IdempotencyMiddleware
 
         if (response is null)
         {
+            IdempotencyMetrics.ConflictsTotal.Add(1);
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request is being processed", request.RawKey);
-            return;
+            return ConflictResult;
         }
 
+        return await WriteStoredResponseAsync(httpContext, request, response);
+    }
+
+    private async Task<string> WriteStoredResponseAsync(
+        HttpContext httpContext,
+        GuardedRequest request,
+        IdempotentResponse response)
+    {
+        if (IdempotencyResponseWriter.TryGetNotReplayableStatus(response, out var originalStatusCode))
+        {
+            IdempotencyMetrics.ReplaysRejected.Add(1);
+            _logger.LogInformation(
+                "Rejecting retry for key {KeyHash}: the original response, status {StatusCode}, was too large to store",
+                request.KeyHash, originalStatusCode);
+
+            await _responseWriter.WriteNotReplayableAsync(httpContext, originalStatusCode, request.RawKey);
+            return NotReplayableResult;
+        }
+
+        IdempotencyMetrics.ReplaysTotal.Add(1);
         _logger.LogInformation("Replaying idempotent response for key {KeyHash}, original status {StatusCode}", request.KeyHash, response.StatusCode);
 
         await _responseWriter.ReplayAsync(httpContext, response);
+        return ReplayedResult;
     }
 
-    private async Task HandleConcurrentRequestAsync(
+    /// <returns>How the request ended, for the span's <c>idempotency.result</c> tag.</returns>
+    private async Task<string> HandleConcurrentRequestAsync(
         HttpContext httpContext,
         GuardedRequest request,
         CancellationToken requestAborted)
     {
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
+            IdempotencyMetrics.ConflictsTotal.Add(1);
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request with this idempotency key is currently being processed", request.RawKey);
-            return;
+            return ConflictResult;
         }
 
         var deadline = DateTime.UtcNow.Add(_options.ConcurrentRequestTimeout);
@@ -457,7 +514,7 @@ public class IdempotencyMiddleware
             }
             catch (OperationCanceledException) when (requestAborted.IsCancellationRequested)
             {
-                return;
+                return "cancelled";
             }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
@@ -468,28 +525,26 @@ public class IdempotencyMiddleware
                 case ClaimResult.Claimed claimed:
                     IdempotencyMetrics.ClaimsTotal.Add(1);
                     await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
-                    return;
+                    return ClaimedResult;
 
                 case ClaimResult.Completed:
                     var response = await GetResponseAsync(request, requestAborted);
                     if (response is not null)
                     {
-                        IdempotencyMetrics.ReplaysTotal.Add(1);
-                        _logger.LogInformation("Replaying idempotent response after wait for key {KeyHash}", request.KeyHash);
-
-                        await _responseWriter.ReplayAsync(httpContext, response);
-                        return;
+                        return await WriteStoredResponseAsync(httpContext, request, response);
                     }
                     break;
 
                 case ClaimResult.FingerprintMismatch mismatch:
                     await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
-                    return;
+                    return FingerprintMismatchResult;
             }
         }
 
+        IdempotencyMetrics.ConflictsTotal.Add(1);
         await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
             "Timed out waiting for concurrent request to complete", request.RawKey);
+        return ConflictResult;
     }
 
     private async Task WriteFingerprintMismatchAsync(
@@ -521,5 +576,6 @@ public class IdempotencyMiddleware
         string Fingerprint,
         TimeSpan ClaimTtl,
         TimeSpan ResponseTtl,
-        Func<int, bool>? ShouldStoreResponse);
+        Func<int, bool>? ShouldStoreResponse,
+        OversizedResponseBehavior OversizedResponse);
 }

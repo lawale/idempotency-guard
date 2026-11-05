@@ -1,6 +1,6 @@
 # Upgrading to 2.0
 
-2.0 closes several ways a retry could run a handler twice or receive someone else's response. Most of the changes need no code from you, but four things can affect a live system during the rollout, so read those first.
+2.0 closes several ways a retry could run a handler twice or receive someone else's response. Most of the changes need no code from you, but five things can affect a live system during the rollout, so read those first.
 
 ## Check before you deploy
 
@@ -51,6 +51,14 @@ Enabling `KeyScope` changes both the store key and the value `DownstreamKey` is 
 
 Enable scoping at a quiet time, and wait for in-flight retries to drain first. Downstream keys have to stay scoped: otherwise two callers using the same key would send the provider the same key, and the second charge would be treated as a duplicate of the first.
 
+### 5. Retries of responses over 1 MB now get a 410
+
+In 1.x, a response larger than `MaxResponseBodySize` released its claim, so a retry ran the handler again, side effects included. A retry now gets a 410 with the original status in `X-Idempotent-Original-Status`, and the handler doesn't run. **A client that lost that response can't get it back with the same key.** Once `ResponseTtl` passes, the key is free again, and a retry runs the handler.
+
+Check whether any endpoint returns more than the limit: `idempotency.responses.oversized` counts them once you've upgraded. Raise the limit if they should be replayed. For an endpoint that's safe to rerun, keep the old behaviour with `OversizedResponse = OversizedResponseBehavior.RunHandlerAgain`, globally or in a policy.
+
+An `ErrorResponseFactory` will see the new kind `ResponseNotReplayable`, so check any exhaustive `switch` on `Kind`.
+
 ## Breaking API changes
 
 ### `IIdempotencyStore`
@@ -66,6 +74,10 @@ Task<bool> SetResponseAsync(string key, string claimToken, IdempotentResponse re
 Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default);
 ```
 
+### `FingerprintResult`
+
+`RequestBody` is gone, because nothing read it. A custom `IFingerprintBuilder` now returns `new FingerprintResult(fingerprint)`.
+
 ### Package changes
 
 - `IdempotencyOptions`, `IdempotencyPolicy`, `HeaderFilter`, `CleanupOptions` and the related enums now ship in `IdempotencyGuard.AspNetCore`, because they refer to `HttpContext`. The namespace is still `IdempotencyGuard`. Only code that references the core package without the AspNetCore package is affected.
@@ -74,9 +86,16 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 
 - Logs carry `KeyHash` instead of `Key`, and spans carry `idempotency.key_hash` instead of `idempotency.key`. The value is the digest from the store key, so it correlates requests and leads to the row, but can't be used to replay a response. Update any dashboards or log queries that use the old names.
 - New counter: `idempotency.claims.lost`. It counts responses that weren't stored because the handler outlived `ClaimTtl` and the claim was taken over. If it's above zero, raise `ClaimTtl`.
+- `idempotency.conflicts.total` now counts 409 responses only, as its description always said. It used to count every request that found the key in progress, including waiters that went on to replay or take over, so expect it to drop under the default `WaitThenReplay`. Waiters that time out now count.
+- `idempotency.replays.total` no longer counts a replay that found no response and returned a 409.
+- `idempotency.claims.released` has a `reason` tag: `failure`, `response_too_large` or `should_store_response`. It always counted all three, despite being described as failures only. It no longer counts a release when the claim was already gone. `response_too_large` now only appears with `RunHandlerAgain`, and an oversized response that `ShouldStoreResponse` refuses reports `should_store_response`.
+- New counters: `idempotency.responses.oversized`, tagged `behavior`, and `idempotency.replays.rejected`, which counts the 410s and isn't included in `idempotency.replays.total`. The `idempotency.result` span tag can also be `not_replayable`.
+- The `idempotency.result` span tag now reports how the request ended, rather than `conflict` for any request that found the key in progress. A waiter whose client disconnects reports the new value `cancelled`.
 
 ### Behaviour
 
+- Bytes a handler wrote through `Response.BodyWriter` without flushing now reach the client. They used to be dropped, and the truncated response was stored and replayed.
+- `MaxFingerprintBodySize = 0` no longer reads the request body. It skipped hashing the body as documented, but read all of it into memory first, with no limit.
 - Keys longer than `MaxKeyLength` (1024 characters by default), or containing control characters, are rejected with a 400. Previously, long keys failed with a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). If your clients send longer keys, raise `MaxKeyLength`, which is now safe on every store.
 - `KeyPrefix` is limited to 128 characters. A longer configured prefix fails at startup, and a longer per-request prefix fails the request.
 - Keys differing only by case are now separate on SQL Server, matching the other stores.

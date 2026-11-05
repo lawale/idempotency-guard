@@ -29,6 +29,9 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
     // a PostgreSQL btree index accepts (2704 bytes).
     private const int LongKeyLength = 4096;
 
+    // Just over the default MaxResponseBodySize.
+    private const int OversizedBodyLength = 1_048_577;
+
     private readonly ConcurrentDictionary<string, int> _runs = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource> _entered = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _gates = new();
@@ -83,6 +86,7 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
                         endpoints.MapPost("/abort", AbortingHandlerAsync);
                         endpoints.MapPost("/scoped", CreatedHandlerAsync).RequireIdempotency(o => o.Policy = "scoped");
                         endpoints.MapPost("/unscoped", CreatedHandlerAsync);
+                        endpoints.MapPost("/oversized", OversizedHandlerAsync);
                     });
                 });
             })
@@ -137,6 +141,21 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
 
         first.StatusCode.Should().Be(HttpStatusCode.Created);
         retry.Headers.Contains("X-Idempotent-Replayed").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Oversized_response_rejects_retries_on_every_store()
+    {
+        var key = UniqueKey();
+
+        var first = await _client!.SendAsync(Post("/oversized", key, "A"));
+        var retry = await _client!.SendAsync(Post("/oversized", key, "A"));
+
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await first.Content.ReadAsByteArrayAsync()).Should().HaveCount(OversizedBodyLength);
+        retry.StatusCode.Should().Be(HttpStatusCode.Gone);
+        retry.Headers.GetValues("X-Idempotent-Original-Status").Should().Equal("201");
+        _runs["oversized"].Should().Be(1);
     }
 
     [Fact]
@@ -257,6 +276,13 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
     {
         context.Response.StatusCode = StatusCodes.Status201Created;
         await context.Response.WriteAsync("""{"created":true}""");
+    }
+
+    private async Task OversizedHandlerAsync(HttpContext context)
+    {
+        _runs.AddOrUpdate("oversized", 1, (_, runs) => runs + 1);
+        context.Response.StatusCode = StatusCodes.Status201Created;
+        await context.Response.Body.WriteAsync(new byte[OversizedBodyLength]);
     }
 
     private async Task AbortingHandlerAsync(HttpContext context)

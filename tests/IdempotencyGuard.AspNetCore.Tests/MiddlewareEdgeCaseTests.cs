@@ -35,6 +35,55 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Unflushed_BodyWriter_bytes_reach_the_client_and_are_replayed()
+    {
+        var client = await StartAsync(context =>
+        {
+            WriteWithoutFlushing(context, "hello");
+            return Task.CompletedTask;
+        });
+        var key = NewKey();
+
+        var first = await client.SendAsync(Post(key));
+        var retry = await client.SendAsync(Post(key));
+
+        (await first.Content.ReadAsStringAsync()).Should().Be("hello");
+        (await retry.Content.ReadAsStringAsync()).Should().Be("hello");
+        retry.Headers.Contains(ReplayedHeader).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Body_and_unflushed_BodyWriter_bytes_stay_in_order()
+    {
+        var client = await StartAsync(async context =>
+        {
+            await context.Response.Body.WriteAsync("first-"u8.ToArray());
+            WriteWithoutFlushing(context, "second");
+        });
+
+        var response = await client.SendAsync(Post(NewKey()));
+
+        (await response.Content.ReadAsStringAsync()).Should().Be("first-second");
+    }
+
+    [Fact]
+    public async Task Handler_that_completes_the_response_itself_is_stored_and_replayed()
+    {
+        var client = await StartAsync(async context =>
+        {
+            await context.Response.WriteAsync("done");
+            await context.Response.CompleteAsync();
+        });
+        var key = NewKey();
+
+        var first = await client.SendAsync(Post(key));
+        var retry = await client.SendAsync(Post(key));
+
+        (await first.Content.ReadAsStringAsync()).Should().Be("done");
+        (await retry.Content.ReadAsStringAsync()).Should().Be("done");
+    }
+
+    [Fact]
     public async Task Duplicate_json_properties_do_not_fail_the_request()
     {
         var client = await StartAsync(CreatedHandler);
@@ -310,6 +359,13 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
             .StartAsync();
 
         return _host.GetTestClient();
+    }
+
+    private static void WriteWithoutFlushing(HttpContext context, string text)
+    {
+        var writer = context.Response.BodyWriter;
+        var written = Encoding.UTF8.GetBytes(text, writer.GetSpan(text.Length));
+        writer.Advance(written);
     }
 
     private static string NewKey() => $"edge-{Guid.NewGuid():N}";

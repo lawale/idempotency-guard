@@ -333,11 +333,22 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             await using var conn = new SqlConnection(_connectionString);
             await conn.OpenAsync(ct);
 
+            await using var transaction = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+
+            // The checks below aren't safe against themselves: instances starting together can
+            // all see no table or column, and the losers fail creating it. This lock makes them
+            // take turns, and is released when the transaction ends.
             await using var cmd = conn.CreateCommand();
+            cmd.Transaction = transaction;
             cmd.Parameters.AddWithValue("@tableName", _options.TableName);
             cmd.Parameters.AddWithValue("@schemaName", _options.SchemaName);
             cmd.Parameters.AddWithValue("@qualifiedName", FullTableName);
             cmd.CommandText = $@"
+                DECLARE @lockResult INT;
+                EXEC @lockResult = sp_getapplock @Resource = @qualifiedName, @LockMode = 'Exclusive', @LockOwner = 'Transaction';
+                IF @lockResult < 0
+                    THROW 50000, 'Could not acquire the lock for creating the idempotency table.', 1;
+
                 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = @tableName AND schema_id = SCHEMA_ID(@schemaName))
                 BEGIN
                     CREATE TABLE {FullTableName} (
@@ -361,6 +372,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
                     ALTER TABLE {FullTableName} ADD ClaimToken NVARCHAR(64) NULL;";
 
             await cmd.ExecuteNonQueryAsync(ct);
+            await transaction.CommitAsync(ct);
             _tableCreated = true;
         }
         finally

@@ -12,6 +12,30 @@ public abstract class IdempotencyStoreContractTests
 
     private static string UniqueKey() => $"test-{Guid.NewGuid():N}";
 
+    /// <summary>
+    /// Separate store instances share nothing but the database, like separate processes.
+    /// Runs several rounds because the race doesn't lose every time.
+    /// </summary>
+    protected static async Task InstancesStartingTogetherCanClaimAsync(
+        Func<string, Task> prepareTable,
+        Func<string, IIdempotencyStore> newStore)
+    {
+        const int rounds = 5;
+        const int instances = 8;
+
+        for (var round = 0; round < rounds; round++)
+        {
+            var table = $"race_{Guid.NewGuid():N}";
+            await prepareTable(table);
+
+            var stores = Enumerable.Range(0, instances).Select(_ => newStore(table)).ToArray();
+            var claims = await Task.WhenAll(stores.Select(store =>
+                Task.Run(() => store.TryClaimAsync(UniqueKey(), "fp", DefaultClaimTtl))));
+
+            claims.Should().AllBeOfType<ClaimResult.Claimed>();
+        }
+    }
+
     [Fact]
     public async Task TryClaim_new_key_returns_claimed()
     {

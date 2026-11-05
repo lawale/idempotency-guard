@@ -130,6 +130,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
 
     // Maximum response body size to cache (default: 1 MB)
+    // A larger response isn't stored, and a retry gets a 410. See "Response Too Large to Store".
     options.MaxResponseBodySize = 1_048_576;
 
     // Maximum request body bytes used for fingerprint hashing (default: 1 MB)
@@ -267,10 +268,11 @@ The `IdempotencyProblem` passed to the factory contains:
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `StatusCode` | `int` | HTTP status code (400, 409, or 422) |
-| `Kind` | `IdempotencyErrorKind` | `MissingKey`, `FingerprintMismatch`, `Conflict`, or `Timeout` |
+| `StatusCode` | `int` | HTTP status code (400, 403, 409, 410 or 422) |
+| `Kind` | `IdempotencyErrorKind` | `MissingKey`, `FingerprintMismatch`, `Conflict`, `Timeout`, `MissingScope`, `InvalidKey` or `ResponseNotReplayable` |
 | `Message` | `string` | Human-readable description of the error |
 | `IdempotencyKey` | `string?` | The key from the request, when available |
+| `OriginalStatusCode` | `int?` | The original request's status, on `ResponseNotReplayable` |
 
 ## Response Header Filtering
 
@@ -360,7 +362,7 @@ When it returns `false`, the claim is released and the client still gets the ori
 options.ValidateEndpointsOnStartup = true; // Also check outside Development
 ```
 
-It's off by default in production because of the cost. Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the first request regardless, so this is added time rather than moved time: about 1 ms per minimal API endpoint with typed parameters, or a second or so at 1,000 endpoints.
+It's off by default in production because of the cost. Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the first request regardless, so this is added startup time rather than moved time, and it grows with the number of endpoints, especially minimal APIs with typed parameters.
 
 With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
 
@@ -436,7 +438,7 @@ builder.Services.AddIdempotencyGuardPostgresStore(options =>
 });
 ```
 
-Uses `INSERT ... ON CONFLICT DO NOTHING` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using `DELETE ... FOR UPDATE SKIP LOCKED` for safe concurrent purging.
+Uses `INSERT ... ON CONFLICT` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using `DELETE ... FOR UPDATE SKIP LOCKED` for safe concurrent purging.
 
 ### SQL Server Store
 
@@ -528,6 +530,27 @@ A handler runs past `ClaimTtl` and a retry takes over the key. Each claim carrie
 ### Original Request Fails
 A request is waiting on a concurrent request that fails and releases its claim. The waiting request takes over and runs the handler rather than timing out.
 
+### Response Too Large to Store
+A response larger than `MaxResponseBodySize` (1 MB by default) still reaches the client, but it can't be stored. A retry gets a 410 rather than running the handler again, because the handler's side effects have already happened:
+
+```
+HTTP/1.1 410 Gone
+X-Idempotent-Original-Status: 201
+X-Idempotent-Replayed: true
+
+{"error":"The original request completed with status 201, but its response was too large to store, so it can't be replayed"}
+```
+
+**A client that lost the response can't get it back with this key.** Once `ResponseTtl` passes, the key is free again, and a retry runs the handler. If responses this large are normal for you, raise the limit, which applies to every endpoint. For an endpoint that's safe to rerun, such as generating a report, let retries run the handler again:
+
+```csharp
+options.AddPolicy("rerunnable", p => p.OversizedResponse = OversizedResponseBehavior.RunHandlerAgain);
+```
+
+`idempotency.responses.oversized` shows when this happens, and `idempotency.replays.rejected` counts the 410s.
+
+The limit is checked after the handler finishes, so it protects the store rather than the process: the whole response is held in memory first, however large it is. Responses also don't reach the client until the handler finishes, so streaming endpoints shouldn't go through the guard.
+
 ### Payload Mismatch
 A client accidentally reuses an idempotency key with a different request body. The middleware detects the SHA256 fingerprint mismatch and returns 422.
 
@@ -541,11 +564,13 @@ Built-in [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/) metric
 | Metric | Type | Description |
 |--------|------|-------------|
 | `idempotency.requests.total` | Counter | Total requests with idempotency keys |
-| `idempotency.replays.total` | Counter | Requests served from cache |
+| `idempotency.replays.total` | Counter | Stored responses replayed to a client |
+| `idempotency.replays.rejected` | Counter | 410 responses for retries whose original response was too large to store |
+| `idempotency.responses.oversized` | Counter | Responses too large to store. The `behavior` tag is `reject_retries` or `run_handler_again` |
 | `idempotency.claims.total` | Counter | New claims created |
-| `idempotency.claims.released` | Counter | Claims released due to failure |
+| `idempotency.claims.released` | Counter | Claims released without storing a response. The `reason` tag is `failure`, `response_too_large` or `should_store_response` |
 | `idempotency.claims.lost` | Counter | Responses not stored because the handler outlived `ClaimTtl` and the claim was taken over |
-| `idempotency.conflicts.total` | Counter | 409 responses (concurrent in-progress) |
+| `idempotency.conflicts.total` | Counter | 409 responses for a key in progress, including waiters that timed out |
 | `idempotency.fingerprint_mismatches.total` | Counter | 422 responses (payload mismatch) |
 | `idempotency.store.latency` | Histogram | Store operation latency (ms) |
 | `idempotency.purge.total` | Counter | Expired entries purged by cleanup |
@@ -587,15 +612,15 @@ dotnet test tests/IdempotencyGuard.Stress.Tests/
 IDEMPOTENCY_STRESS_SCALE=10 dotnet test tests/IdempotencyGuard.Stress.Tests/
 ```
 
-Measured overhead on .NET 9 with the in-memory store, via BenchmarkDotNet:
+Measured overhead with the in-memory store, via BenchmarkDotNet on .NET 10 and a GitHub Actions runner (4 vCPU):
 
-| Path | M2 Pro | GitHub Actions runner (4 vCPU) | Allocated |
-|---|---:|---:|---:|
-| Handler with no guard | 8.5 µs | 15.6 µs | 9.4 KB |
-| Guard, new key | 22.6 µs | 66.2 µs | 27 KB |
-| Guard, replayed response | 16.1 µs | 56.4 µs | 25.4 KB |
+| Path | Mean | Allocated |
+|---|---:|---:|
+| Handler with no guard | 13.8 µs | 9.09 KB |
+| Guard, new key | 62.9 µs | 26.77 KB |
+| Guard, replayed response | 52.0 µs | 25.3 KB |
 
-Around 14–50 µs per first request and 8–41 µs per replay depending on the machine, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs 1.25–2.07 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
+Around 49 µs per first request and 38 µs per replay on that runner, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs about 1.4 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
 
 Full numbers, methodology and limitations: [docs/stability-and-performance.md](docs/stability-and-performance.md).
 

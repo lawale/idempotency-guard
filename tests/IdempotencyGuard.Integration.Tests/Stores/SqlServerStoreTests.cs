@@ -35,6 +35,35 @@ public class SqlServerStoreTests : IdempotencyStoreContractTests, IClassFixture<
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
+    public Task Instances_starting_together_create_the_table() =>
+        InstancesStartingTogetherCanClaimAsync(_ => Task.CompletedTask, NewStore);
+
+    [Fact]
+    public Task Instances_starting_together_upgrade_a_1x_table() =>
+        InstancesStartingTogetherCanClaimAsync(async table =>
+        {
+            await using var conn = new SqlConnection(_fixture.ConnectionString);
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"""
+                CREATE TABLE [dbo].[{table}] (
+                    [Key] NVARCHAR(256) NOT NULL PRIMARY KEY, Fingerprint NVARCHAR(128) NOT NULL,
+                    State NVARCHAR(20) NOT NULL DEFAULT 'claimed', ClaimedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                    CompletedAtUtc DATETIME2 NULL, ExpiresAtUtc DATETIME2 NOT NULL, StatusCode INT NULL,
+                    HeadersJson NVARCHAR(MAX) NULL, ResponseBody VARBINARY(MAX) NULL);
+                CREATE NONCLUSTERED INDEX IX_{table}_Expires ON [dbo].[{table}] (ExpiresAtUtc);
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }, NewStore);
+
+    private SqlServerIdempotencyStore NewStore(string table) => new(Options.Create(new SqlServerIdempotencyOptions
+    {
+        ConnectionString = _fixture.ConnectionString,
+        TableName = table,
+        AutoCreateTable = true
+    }));
+
+    [Fact]
     public async Task Table_created_by_1x_is_upgraded_and_its_completed_entries_still_replay()
     {
         var table = $"legacy_{Guid.NewGuid():N}";
