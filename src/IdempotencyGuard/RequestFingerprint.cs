@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -10,25 +11,22 @@ public static class RequestFingerprint
     {
         using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        sha256.AppendData(Encoding.UTF8.GetBytes(httpMethod.ToUpperInvariant()));
-        sha256.AppendData(Encoding.UTF8.GetBytes(":"));
-        sha256.AppendData(Encoding.UTF8.GetBytes(path));
-
-        if (body is { Length: > 0 })
-        {
-            sha256.AppendData(Encoding.UTF8.GetBytes(":"));
-            var normalised = NormaliseJsonBody(body);
-            sha256.AppendData(normalised);
-        }
-
-        if (!string.IsNullOrEmpty(extraFingerprint))
-        {
-            sha256.AppendData(Encoding.UTF8.GetBytes(":"));
-            sha256.AppendData(Encoding.UTF8.GetBytes(extraFingerprint));
-        }
+        AppendField(sha256, Encoding.UTF8.GetBytes(httpMethod.ToUpperInvariant()));
+        AppendField(sha256, Encoding.UTF8.GetBytes(path));
+        AppendField(sha256, body is { Length: > 0 } ? NormaliseJsonBody(body) : []);
+        AppendField(sha256, Encoding.UTF8.GetBytes(extraFingerprint ?? string.Empty));
 
         var hash = sha256.GetHashAndReset();
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    // Length-prefixed so that a value can't move from one field into the next and hash the same.
+    private static void AppendField(IncrementalHash hash, ReadOnlySpan<byte> value)
+    {
+        Span<byte> length = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(length, value.Length);
+        hash.AppendData(length);
+        hash.AppendData(value);
     }
 
     public static byte[]? ExtractProperties(byte[]? body, string[] propertyNames)

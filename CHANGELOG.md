@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A client disconnecting after the handler ran could discard the response and release the claim on the SQL stores, so the retry ran the handler again
 - JSON bodies with duplicate property names failed the request with a 500. A repeated name now hashes as its last value, which is what the handler deserializes
 - `{"amount":1}` and `{"amount":"1"}` shared a fingerprint
+- Fingerprint fields had no boundaries, so `POST /pay:{}` with no body matched `POST /pay` with the body `{}`
 - Requests waiting under `WaitThenReplay` timed out with a 409 when the original failed. They now take over
 - In-memory store: an entry past its `ResponseTtl` returned a 409 or 422 instead of being claimable, and a response stored after its claim was purged made every retry return a 422
 - An action's `[Idempotent]` attribute discarded its controller's settings. They now merge, and the most specific value wins

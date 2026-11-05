@@ -368,4 +368,48 @@ public class RequestFingerprintTests
         hash.Should().Be(RequestFingerprint.Compute("POST", "/payments", lastValue));
         hash.Should().NotBe(RequestFingerprint.Compute("POST", "/payments", firstValue));
     }
+
+    [Fact]
+    public void Body_moved_into_the_path_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("{}");
+
+        RequestFingerprint.Compute("POST", "/pay:{}", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body));
+    }
+
+    [Fact]
+    public void Body_run_into_the_path_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("{}");
+
+        RequestFingerprint.Compute("POST", "/pay{}", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body));
+    }
+
+    [Fact]
+    public void Extra_fingerprint_moved_into_the_path_has_a_different_fingerprint()
+    {
+        RequestFingerprint.Compute("POST", "/pay:q=1", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", null, "q=1"));
+    }
+
+    [Fact]
+    public void Extra_fingerprint_moved_into_a_raw_body_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("raw");
+        var spliced = Encoding.UTF8.GetBytes("raw:q=1");
+
+        RequestFingerprint.Compute("POST", "/pay", spliced)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body, "q=1"));
+    }
+
+    [Fact]
+    public void Body_and_extra_fingerprint_with_the_same_value_have_different_fingerprints()
+    {
+        var body = Encoding.UTF8.GetBytes("value");
+
+        RequestFingerprint.Compute("POST", "/pay", body)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", null, "value"));
+    }
 }
