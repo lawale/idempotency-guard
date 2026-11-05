@@ -130,6 +130,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
 
     // Maximum response body size to cache (default: 1 MB)
+    // A larger response isn't stored, so a retry runs the handler again.
     options.MaxResponseBodySize = 1_048_576;
 
     // Maximum request body bytes used for fingerprint hashing (default: 1 MB)
@@ -436,7 +437,7 @@ builder.Services.AddIdempotencyGuardPostgresStore(options =>
 });
 ```
 
-Uses `INSERT ... ON CONFLICT DO NOTHING` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using `DELETE ... FOR UPDATE SKIP LOCKED` for safe concurrent purging.
+Uses `INSERT ... ON CONFLICT` for atomic claim operations. Expired entries are cleaned up by the background cleanup service using `DELETE ... FOR UPDATE SKIP LOCKED` for safe concurrent purging.
 
 ### SQL Server Store
 
@@ -527,6 +528,11 @@ A handler runs past `ClaimTtl` and a retry takes over the key. Each claim carrie
 
 ### Original Request Fails
 A request is waiting on a concurrent request that fails and releases its claim. The waiting request takes over and runs the handler rather than timing out.
+
+### Response Too Large to Store
+A response larger than `MaxResponseBodySize` (1 MB by default) still reaches the client, but it isn't stored and the claim is released, so **a retry runs the handler again**. Raise the limit on endpoints with large responses, or use a [downstream key](#downstream-key-generation) for anything with side effects. `idempotency.claims.released` with the reason `response_too_large` shows when this happens.
+
+The limit is checked after the handler finishes, so it protects the store rather than the process: the whole response is held in memory first, however large it is. Responses also don't reach the client until the handler finishes, so streaming endpoints shouldn't go through the guard.
 
 ### Payload Mismatch
 A client accidentally reuses an idempotency key with a different request body. The middleware detects the SHA256 fingerprint mismatch and returns 422.

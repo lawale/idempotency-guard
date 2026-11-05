@@ -27,6 +27,12 @@ public class IdempotencyOptions
 
     public HashSet<string> EnforcedMethods { get; set; } = ["POST", "PUT", "PATCH"];
 
+    /// <summary>
+    /// Largest response body that can be stored, in bytes. A larger response still reaches
+    /// the client, but isn't stored and its claim is released, so a retry runs the handler again.
+    /// The check runs after the handler finishes, so this doesn't limit how much is buffered.
+    /// Default: 1 MB.
+    /// </summary>
     public int MaxResponseBodySize { get; set; } = 1_048_576;
 
     /// <summary>
