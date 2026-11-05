@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 
 namespace IdempotencyGuard.AspNetCore;
@@ -7,7 +8,7 @@ namespace IdempotencyGuard.AspNetCore;
 /// Default fingerprint strategy: reads the request body, applies the
 /// configured size cap and property extraction from
 /// <see cref="IdempotentAttribute"/>, incorporates query/route extra
-/// fingerprint segments, and delegates to
+/// fingerprint segments and the endpoint's declared hosts, and delegates to
 /// <see cref="RequestFingerprint.Compute"/>.
 /// </summary>
 public class DefaultFingerprintBuilder : IFingerprintBuilder
@@ -38,7 +39,7 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
 
         var fingerprint = RequestFingerprint.Compute(
             context.Request.Method,
-            context.Request.Path.Value ?? "/",
+            context.Request.PathBase.Add(context.Request.Path).Value ?? "/",
             fingerprintBody,
             extraFingerprint);
 
@@ -95,12 +96,18 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
 
     private static string? BuildExtraFingerprint(HttpContext httpContext, IdempotentAttribute? attr)
     {
-        if (attr is null)
-            return null;
-
         var segments = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        if (attr.FingerprintQueryParameters is { Length: > 0 } queryParams)
+        // The hosts the endpoint declares, not the Host header. Proxies often rewrite the header,
+        // so a retry can arrive with a different value and still has to replay.
+        if (httpContext.GetEndpoint()?.Metadata.GetMetadata<IHostMetadata>() is { Hosts.Count: > 0 } hostMetadata)
+        {
+            segments["h:"] = string.Join(",", hostMetadata.Hosts
+                .Select(host => Uri.EscapeDataString(host.ToLowerInvariant()))
+                .Order(StringComparer.Ordinal));
+        }
+
+        if (attr?.FingerprintQueryParameters is { Length: > 0 } queryParams)
         {
             var query = httpContext.Request.Query;
             foreach (var name in queryParams)
@@ -110,7 +117,7 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
             }
         }
 
-        if (attr.FingerprintRouteValues is { Length: > 0 } routeValues)
+        if (attr?.FingerprintRouteValues is { Length: > 0 } routeValues)
         {
             var route = httpContext.Request.RouteValues;
             foreach (var name in routeValues)

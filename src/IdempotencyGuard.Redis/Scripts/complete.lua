@@ -1,4 +1,5 @@
 -- @key = idempotency:{key}
+-- @claim_token = token returned by the claim
 -- @response = response JSON
 -- @response_ttl_ms = response_ttl_ms
 
@@ -7,8 +8,12 @@ if not existing then
     return 0
 end
 
--- Preserve the original fingerprint from the claim entry
 local claimed = cjson.decode(existing)
+if claimed.state ~= 'claimed' or claimed.claim_token ~= @claim_token then
+    return 0
+end
+
+-- Preserve the original fingerprint from the claim entry
 local completed = cjson.decode(@response)
 completed.fingerprint = claimed.fingerprint
 local merged = cjson.encode(completed)

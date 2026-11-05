@@ -32,8 +32,8 @@ public class StoreBenchmarks
             Body = Encoding.UTF8.GetBytes("""{"id":"pay_123","status":"created"}""")
         };
 
-        await _store.TryClaimAsync(CompletedKey, "fp", ClaimTtl);
-        await _store.SetResponseAsync(CompletedKey, _response, ResponseTtl);
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync(CompletedKey, "fp", ClaimTtl)).ClaimToken;
+        await _store.SetResponseAsync(CompletedKey, claimToken, _response, ResponseTtl);
     }
 
     /// <summary>
@@ -73,7 +73,7 @@ public class StoreBenchmarks
     public async Task ClaimAndComplete()
     {
         var key = $"bench-cycle-{NextWrite()}";
-        await _store.TryClaimAsync(key, "fp", ClaimTtl);
-        await _store.SetResponseAsync(key, _response, ResponseTtl);
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync(key, "fp", ClaimTtl)).ClaimToken;
+        await _store.SetResponseAsync(key, claimToken, _response, ResponseTtl);
     }
 }

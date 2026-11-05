@@ -31,6 +31,10 @@ builder.Services.AddIdempotencyGuard(options =>
 builder.Services.AddIdempotencyGuardInMemoryStore(); // Use Redis/SQL in production
 
 var app = builder.Build();
+
+// The guard must come after authorization, or it replays stored responses to unauthorized callers.
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseIdempotencyGuard();
 ```
 
@@ -67,6 +71,29 @@ Or use the `[Idempotent]` attribute for controller-based APIs:
 [Idempotent(ClaimTtlSeconds = 120, ResponseTtlSeconds = 86400)]
 public IActionResult CreatePayment(PaymentRequest request) { ... }
 ```
+
+Settings merge across a controller and its actions, and the most specific value wins.
+
+## Scoping and Policies
+
+By default every caller shares one key space, so any caller who presents a key gets the response stored under it. Set a scope on any API with more than one caller. Use named policies when it differs by endpoint, or to control per endpoint whether 5xx responses are stored:
+
+```csharp
+builder.Services.AddIdempotencyGuard(options =>
+{
+    options.AddPolicy("user", p => p.KeyScope = ctx => ctx.User.FindFirstValue("sub"));
+    options.AddPolicy("service", p =>
+    {
+        p.KeyScope = ctx => ctx.User.FindFirstValue("client_id");
+        p.ShouldStoreResponse = status => status < 500;
+    });
+});
+
+[Idempotent(Policy = "user")]
+app.MapPost(...).RequireIdempotency(o => o.Policy = "service");
+```
+
+See the [full documentation](https://github.com/lawale/idempotency-guard#scoping-keys-to-callers) for the details and the pitfalls.
 
 ## Selective Fingerprinting
 

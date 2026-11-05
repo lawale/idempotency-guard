@@ -28,8 +28,8 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task TryClaim_completed_key_returns_completed()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
-        await _store.SetResponseAsync("key-1", CreateResponse(200, "ok"), TimeSpan.FromHours(24));
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
+        await _store.SetResponseAsync("key-1", claimToken, CreateResponse(200, "ok"), TimeSpan.FromHours(24));
 
         var result = await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
 
@@ -63,10 +63,10 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task SetResponse_stores_response_for_replay()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
 
         var response = CreateResponse(200, """{"id": "pay_123"}""");
-        await _store.SetResponseAsync("key-1", response, TimeSpan.FromHours(24));
+        await _store.SetResponseAsync("key-1", claimToken, response, TimeSpan.FromHours(24));
 
         var retrieved = await _store.GetResponseAsync("key-1");
 
@@ -96,8 +96,8 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task ReleaseClaim_allows_new_claim()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
-        await _store.ReleaseClaimAsync("key-1");
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
+        await _store.ReleaseClaimAsync("key-1", claimToken);
 
         var result = await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
 
@@ -115,8 +115,8 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task HasKey_returns_false_for_released_key()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
-        await _store.ReleaseClaimAsync("key-1");
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
+        await _store.ReleaseClaimAsync("key-1", claimToken);
 
         _store.HasKey("key-1").Should().BeFalse();
     }
@@ -132,8 +132,8 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task GetState_returns_completed_after_response_set()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
-        await _store.SetResponseAsync("key-1", CreateResponse(200, "ok"), TimeSpan.FromHours(24));
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
+        await _store.SetResponseAsync("key-1", claimToken, CreateResponse(200, "ok"), TimeSpan.FromHours(24));
 
         _store.GetState("key-1").Should().Be(IdempotencyState.Completed);
     }
@@ -141,8 +141,8 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     [Fact]
     public async Task GetResponse_returns_null_for_expired_response()
     {
-        await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5));
-        await _store.SetResponseAsync("key-1", CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(1));
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-1", "fingerprint-1", TimeSpan.FromMinutes(5))).ClaimToken;
+        await _store.SetResponseAsync("key-1", claimToken, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(1));
 
         await Task.Delay(10);
 
@@ -177,5 +177,30 @@ public class InMemoryIdempotencyStoreTests : IDisposable
     {
         _store.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    [Fact]
+    public async Task Response_stored_after_claim_was_purged_does_not_cause_fingerprint_mismatch_on_retry()
+    {
+        // A handler outlives ClaimTtl and the cleanup sweep removes its claim before it finishes.
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("key-purged", "fingerprint-1", TimeSpan.FromMilliseconds(1))).ClaimToken;
+        await Task.Delay(20);
+        await _store.PurgeExpiredAsync(100);
+
+        await _store.SetResponseAsync(
+            "key-purged",
+            claimToken,
+            new IdempotentResponse
+            {
+                StatusCode = 201,
+                Headers = new Dictionary<string, string[]>(),
+                Body = Encoding.UTF8.GetBytes("ok")
+            },
+            TimeSpan.FromHours(1));
+
+        var retry = await _store.TryClaimAsync("key-purged", "fingerprint-1", TimeSpan.FromMinutes(5));
+
+        retry.Should().NotBeOfType<ClaimResult.FingerprintMismatch>(
+            "the retry carries the same payload as the request that produced the response");
     }
 }

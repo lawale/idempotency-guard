@@ -122,7 +122,7 @@ public abstract class IdempotencyStoreStressTests
             {
                 var result = await Store.TryClaimAsync(key, "fp-mutex", LongClaimTtl);
 
-                if (result is not ClaimResult.Claimed)
+                if (result is not ClaimResult.Claimed claimed)
                 {
                     return false;
                 }
@@ -136,7 +136,7 @@ public abstract class IdempotencyStoreStressTests
                 Interlocked.Decrement(ref holders);
                 Interlocked.Increment(ref completedCycles);
 
-                await Store.ReleaseClaimAsync(key);
+                await Store.ReleaseClaimAsync(key, claimed.ClaimToken);
                 return true;
             });
 
@@ -179,8 +179,8 @@ public abstract class IdempotencyStoreStressTests
         var key = Key("replay");
         var body = $$"""{"id":"pay_{{_runId}}","amount":1250,"currency":"USD"}""";
 
-        await Store.TryClaimAsync(key, "fp-replay", LongClaimTtl);
-        await Store.SetResponseAsync(key, CreateResponse(201, body), ResponseTtl);
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-replay", LongClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(201, body), ResponseTtl);
 
         var run = await LoadHarness.RunAsync(
             StressProfile.Workers,

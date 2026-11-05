@@ -8,6 +8,13 @@ public class IdempotentAttribute : Attribute
     public int ResponseTtlSeconds { get; set; }
 
     /// <summary>
+    /// Name of a policy registered with <see cref="IdempotencyOptions.AddPolicy"/>.
+    /// When <c>null</c>, the global values on <see cref="IdempotencyOptions"/> apply.
+    /// An unknown name fails at startup.
+    /// </summary>
+    public string? Policy { get; set; }
+
+    /// <summary>
     /// Top-level JSON property names to include in the request fingerprint.
     /// When set, only these properties are hashed; all other body content is ignored.
     /// Property matching is case-insensitive, so <c>nameof(PaymentRequest.Amount)</c>
@@ -29,4 +36,30 @@ public class IdempotentAttribute : Attribute
     /// When <c>null</c> or empty, route values are not included in the fingerprint (default behaviour).
     /// </summary>
     public string[]? FingerprintRouteValues { get; set; }
+
+    /// <summary>
+    /// Combines attributes from least to most specific (controller, then action). Each
+    /// setting comes from the most specific attribute that sets it. <see cref="Required"/>
+    /// has no unset value, so it always comes from the most specific attribute.
+    /// </summary>
+    internal static IdempotentAttribute? Merge(IReadOnlyList<IdempotentAttribute> attributes)
+    {
+        if (attributes.Count <= 1)
+            return attributes.Count == 0 ? null : attributes[0];
+
+        var merged = new IdempotentAttribute();
+
+        foreach (var attribute in attributes)
+        {
+            merged.Required = attribute.Required;
+            merged.ClaimTtlSeconds = attribute.ClaimTtlSeconds > 0 ? attribute.ClaimTtlSeconds : merged.ClaimTtlSeconds;
+            merged.ResponseTtlSeconds = attribute.ResponseTtlSeconds > 0 ? attribute.ResponseTtlSeconds : merged.ResponseTtlSeconds;
+            merged.Policy = attribute.Policy ?? merged.Policy;
+            merged.FingerprintProperties = attribute.FingerprintProperties ?? merged.FingerprintProperties;
+            merged.FingerprintQueryParameters = attribute.FingerprintQueryParameters ?? merged.FingerprintQueryParameters;
+            merged.FingerprintRouteValues = attribute.FingerprintRouteValues ?? merged.FingerprintRouteValues;
+        }
+
+        return merged;
+    }
 }

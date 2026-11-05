@@ -5,7 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+**Breaking release. See the [2.0 upgrade guide](docs/upgrading-to-2.0.md); some of these changes can affect a live system during the rollout.**
+
+### Security
+- A guard placed before `UseAuthorization()` served stored responses to unauthorized callers, including anonymous ones, and stored their 401s for the rightful caller's retry to receive. It now throws on endpoints that require authorization (`SuppressAuthorizationOrderCheck` turns this off), and the docs give the required order
+- Keys can now be scoped to a caller with `IdempotencyOptions.KeyScope`, so one caller can't replay another's response. This is opt-in, because the right identifier depends on your system. A startup warning fires until it's configured (`SuppressUnscopedKeysWarning` turns this off), and a `null` scope is rejected with a 403
+- Raw idempotency keys no longer reach logs or spans, which now carry a truncated hash (`KeyHash`, `idempotency.key_hash`)
+
+### Changed
+- **Breaking:** `IIdempotencyStore.SetResponseAsync` and `ReleaseClaimAsync` take a claim token and return whether they applied, and `ClaimResult.Claimed` carries the token. The SQL stores add a nullable claim token column, created automatically when `AutoCreateTable` is on
+- **Breaking:** `IdempotencyOptions` and related types moved to `IdempotencyGuard.AspNetCore`, keeping the `IdempotencyGuard` namespace
+- **Breaking:** store keys are now the prefix followed by a fixed-length digest of the scope and client key, so entries stored by 1.x are no longer found. `IIdempotencyContext.Key` and downstream keys are unaffected
+- **Breaking:** numbers now hash as numbers, which changes the fingerprint of any JSON body containing one
+- Logs and spans now carry the store key's digest, so a log line leads straight to its row
+- `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope
+
+### Fixed
+- A request that outlived its claim could overwrite or release the claim of the request that took over, on every store. Its response could then be replayed for a different payload
+- A client disconnecting after the handler ran could discard the response and release the claim on the SQL stores, so the retry ran the handler again
+- JSON bodies with duplicate property names failed the request with a 500. A repeated name now hashes as its last value, which is what the handler deserializes
+- `{"amount":1}` and `{"amount":"1"}` shared a fingerprint
+- A key reused on an endpoint separated by `PathBase`, `RequireHost` or `[Host]` replayed the other endpoint's response. It now gets a 422
+- Fingerprint fields had no boundaries, so `POST /pay:{}` with no body matched `POST /pay` with the body `{}`
+- Requests waiting under `WaitThenReplay` timed out with a 409 when the original failed. They now take over
+- In-memory store: an entry past its `ResponseTtl` returned a 409 or 422 instead of being claimable, and a response stored after its claim was purged made every retry return a 422
+- An action's `[Idempotent]` attribute discarded its controller's settings. They now merge, and the most specific value wins
+- Concurrent first requests no longer race to create the SQL stores' tables within an instance
+- Long keys caused a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). Stores now see a fixed-length digest, and keys over `MaxKeyLength` or containing control characters get a 400
+- SQL Server's default collation treated keys differing only by case as the same key, unlike the other stores
+- The PostgreSQL and SQL Server READMEs listed the wrong name for the fingerprint column
+
 ### Added
+- Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup when `ValidateEndpointsOnStartup` is on
+- `ShouldStoreResponse` decides by status code whether a response is stored, globally or per policy. By default every response is stored, including 5xx
+- `MaxKeyLength` limits the keys accepted from clients. The default is 1024, and 0 disables the check
+- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds about 1 ms per minimal API endpoint with typed parameters. It reports unknown policies, and routes left unscoped while others have a scope
+- `IdempotencyStoreKey.For` computes the store key for a client's key, for debugging
+- `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
 - BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size
 - `docs/stability-and-performance.md` documenting the measured overhead and the limits of what the stress suite proves

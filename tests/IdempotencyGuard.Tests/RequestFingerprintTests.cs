@@ -318,4 +318,98 @@ public class RequestFingerprintTests
 
         hash1.Should().Be(hash2);
     }
+
+    [Theory]
+    [InlineData("""{"a":1,"a":2}""")]
+    [InlineData("""{"outer":{"a":1,"a":2}}""")]
+    [InlineData("""[{"a":1,"a":2}]""")]
+    public void Compute_does_not_throw_on_duplicate_json_properties(string json)
+    {
+        var body = Encoding.UTF8.GetBytes(json);
+
+        var act = () => RequestFingerprint.Compute("POST", "/payments", body);
+
+        act.Should().NotThrow("duplicate properties are valid input to JsonDocument and must not fail the request");
+    }
+
+    [Theory]
+    [InlineData("""{"amount":1,"amount":2,"currency":"USD"}""")]
+    [InlineData("""{"amount":{"value":1,"value":2},"currency":"USD"}""")]
+    public void ExtractProperties_does_not_throw_on_duplicate_json_properties(string json)
+    {
+        var body = Encoding.UTF8.GetBytes(json);
+
+        var act = () => RequestFingerprint.ExtractProperties(body, ["amount"]);
+
+        act.Should().NotThrow("duplicate properties are valid input to JsonDocument and must not fail the request");
+    }
+
+    [Fact]
+    public void Number_and_string_with_the_same_text_produce_different_hashes()
+    {
+        var number = Encoding.UTF8.GetBytes("""{"amount":1}""");
+        var text = Encoding.UTF8.GetBytes("""{"amount":"1"}""");
+
+        var numberHash = RequestFingerprint.Compute("POST", "/payments", number);
+        var textHash = RequestFingerprint.Compute("POST", "/payments", text);
+
+        numberHash.Should().NotBe(textHash);
+    }
+
+    [Fact]
+    public void Duplicate_json_property_hashes_as_its_last_value_matching_what_the_handler_deserializes()
+    {
+        var duplicated = Encoding.UTF8.GetBytes("""{"amount":1,"amount":2}""");
+        var lastValue = Encoding.UTF8.GetBytes("""{"amount":2}""");
+        var firstValue = Encoding.UTF8.GetBytes("""{"amount":1}""");
+
+        var hash = RequestFingerprint.Compute("POST", "/payments", duplicated);
+
+        hash.Should().Be(RequestFingerprint.Compute("POST", "/payments", lastValue));
+        hash.Should().NotBe(RequestFingerprint.Compute("POST", "/payments", firstValue));
+    }
+
+    [Fact]
+    public void Body_moved_into_the_path_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("{}");
+
+        RequestFingerprint.Compute("POST", "/pay:{}", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body));
+    }
+
+    [Fact]
+    public void Body_run_into_the_path_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("{}");
+
+        RequestFingerprint.Compute("POST", "/pay{}", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body));
+    }
+
+    [Fact]
+    public void Extra_fingerprint_moved_into_the_path_has_a_different_fingerprint()
+    {
+        RequestFingerprint.Compute("POST", "/pay:q=1", null)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", null, "q=1"));
+    }
+
+    [Fact]
+    public void Extra_fingerprint_moved_into_a_raw_body_has_a_different_fingerprint()
+    {
+        var body = Encoding.UTF8.GetBytes("raw");
+        var spliced = Encoding.UTF8.GetBytes("raw:q=1");
+
+        RequestFingerprint.Compute("POST", "/pay", spliced)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", body, "q=1"));
+    }
+
+    [Fact]
+    public void Body_and_extra_fingerprint_with_the_same_value_have_different_fingerprints()
+    {
+        var body = Encoding.UTF8.GetBytes("value");
+
+        RequestFingerprint.Compute("POST", "/pay", body)
+            .Should().NotBe(RequestFingerprint.Compute("POST", "/pay", null, "value"));
+    }
 }

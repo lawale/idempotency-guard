@@ -44,14 +44,15 @@ When `AutoCreateTable = true`, the store creates the following table on first us
 ```sql
 CREATE TABLE idempotency_entries (
     key                TEXT        NOT NULL PRIMARY KEY,
-    request_fingerprint TEXT       NOT NULL,
+    fingerprint        TEXT        NOT NULL,
     state              TEXT        NOT NULL,
     claimed_at         TIMESTAMPTZ NOT NULL,
     completed_at       TIMESTAMPTZ,
     expires_at         TIMESTAMPTZ NOT NULL,
     status_code        INTEGER,
     headers_json       TEXT,
-    response_body      BYTEA
+    response_body      BYTEA,
+    claim_token        TEXT
 );
 ```
 

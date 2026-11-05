@@ -36,6 +36,7 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddHostedService<IdempotencyCleanupService>();
+        services.AddHostedService<IdempotencyStartupValidator>();
 
         return services;
     }

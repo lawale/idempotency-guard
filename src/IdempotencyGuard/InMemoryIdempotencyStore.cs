@@ -15,89 +15,75 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
+        IdempotencyEntry? newEntry = null;
 
-        var newEntry = new IdempotencyEntry
+        while (true)
         {
-            Key = key,
-            RequestFingerprint = requestFingerprint,
-            State = IdempotencyState.Claimed,
-            ClaimedAtUtc = now,
-            ExpiresAtUtc = now.Add(claimTtl)
-        };
-
-        var existing = _entries.GetOrAdd(key, newEntry);
-
-        if (ReferenceEquals(existing, newEntry))
-        {
-            return Task.FromResult<ClaimResult>(new ClaimResult.Claimed());
-        }
-
-        if (existing.ExpiresAtUtc < now && existing.State == IdempotencyState.Claimed)
-        {
-            if (_entries.TryUpdate(key, newEntry, existing))
+            if (_entries.TryGetValue(key, out var existing))
             {
-                return Task.FromResult<ClaimResult>(new ClaimResult.Claimed());
+                if (existing.ExpiresAtUtc >= now)
+                {
+                    return Task.FromResult(Classify(existing, requestFingerprint));
+                }
+
+                newEntry ??= NewClaim(key, requestFingerprint, now, claimTtl);
+                if (_entries.TryUpdate(key, newEntry, existing))
+                {
+                    return Task.FromResult<ClaimResult>(new ClaimResult.Claimed(newEntry.ClaimToken!));
+                }
+            }
+            else
+            {
+                newEntry ??= NewClaim(key, requestFingerprint, now, claimTtl);
+                if (_entries.TryAdd(key, newEntry))
+                {
+                    return Task.FromResult<ClaimResult>(new ClaimResult.Claimed(newEntry.ClaimToken!));
+                }
             }
         }
-
-        if (existing.RequestFingerprint != requestFingerprint)
-        {
-            return Task.FromResult<ClaimResult>(
-                new ClaimResult.FingerprintMismatch(existing.RequestFingerprint, requestFingerprint));
-        }
-
-        if (existing.State == IdempotencyState.Completed)
-        {
-            return Task.FromResult<ClaimResult>(new ClaimResult.Completed(existing));
-        }
-
-        return Task.FromResult<ClaimResult>(new ClaimResult.AlreadyClaimed(existing));
     }
 
-    public Task SetResponseAsync(
+    public Task<bool> SetResponseAsync(
         string key,
+        string claimToken,
         IdempotentResponse response,
         TimeSpan responseTtl,
         CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
 
-        // Atomically swap the entry to prevent torn reads from concurrent GetResponseAsync
-        // and guard against the expired-claim-overwrite race in TryClaimAsync.
-        _entries.AddOrUpdate(key,
-            static (_, args) => new IdempotencyEntry
-            {
-                Key = args.key,
-                RequestFingerprint = "",
-                State = IdempotencyState.Completed,
-                ClaimedAtUtc = args.now,
-                CompletedAtUtc = args.now,
-                StatusCode = args.response.StatusCode,
-                ResponseHeadersMap = CloneHeaders(args.response.Headers),
-                ResponseBody = args.response.Body,
-                ExpiresAtUtc = args.now.Add(args.responseTtl)
-            },
-            static (_, existing, args) => new IdempotencyEntry
+        while (_entries.TryGetValue(key, out var existing) && IsHeldBy(existing, claimToken))
+        {
+            // Swapping the whole entry prevents torn reads from a concurrent GetResponseAsync.
+            var completed = new IdempotencyEntry
             {
                 Key = existing.Key,
                 RequestFingerprint = existing.RequestFingerprint,
                 State = IdempotencyState.Completed,
                 ClaimedAtUtc = existing.ClaimedAtUtc,
-                CompletedAtUtc = args.now,
-                StatusCode = args.response.StatusCode,
-                ResponseHeadersMap = CloneHeaders(args.response.Headers),
-                ResponseBody = args.response.Body,
-                ExpiresAtUtc = args.now.Add(args.responseTtl)
-            },
-            (key, now, response, responseTtl));
+                CompletedAtUtc = now,
+                StatusCode = response.StatusCode,
+                ResponseHeadersMap = CloneHeaders(response.Headers),
+                ResponseBody = response.Body,
+                ExpiresAtUtc = now.Add(responseTtl)
+            };
 
-        return Task.CompletedTask;
+            if (_entries.TryUpdate(key, completed, existing))
+            {
+                return Task.FromResult(true);
+            }
+        }
+
+        return Task.FromResult(false);
     }
 
-    public Task ReleaseClaimAsync(string key, CancellationToken ct = default)
+    public Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default)
     {
-        _entries.TryRemove(key, out _);
-        return Task.CompletedTask;
+        var released = _entries.TryGetValue(key, out var existing)
+            && IsHeldBy(existing, claimToken)
+            && _entries.TryRemove(new KeyValuePair<string, IdempotencyEntry>(key, existing));
+
+        return Task.FromResult(released);
     }
 
     public Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)
@@ -109,7 +95,8 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 
         if (entry.ExpiresAtUtc < DateTime.UtcNow)
         {
-            _entries.TryRemove(key, out _);
+            // Compare-and-remove, so a request that just re-claimed the key isn't evicted.
+            _entries.TryRemove(new KeyValuePair<string, IdempotencyEntry>(key, entry));
             return Task.FromResult<IdempotentResponse?>(null);
         }
 
@@ -135,7 +122,7 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
     public Task<int> PurgeExpiredAsync(int batchSize, CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
-        var expiredKeys = new List<string>(Math.Max(batchSize, 4));
+        var expired = new List<KeyValuePair<string, IdempotencyEntry>>(Math.Max(batchSize, 4));
 
         foreach (var kvp in _entries)
         {
@@ -144,22 +131,49 @@ public class InMemoryIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 continue;
             }
 
-            expiredKeys.Add(kvp.Key);
-            if (expiredKeys.Count >= batchSize)
+            expired.Add(kvp);
+            if (expired.Count >= batchSize)
             {
                 break;
             }
         }
 
         var count = 0;
-        foreach (var key in expiredKeys)
+        foreach (var entry in expired)
         {
-            if (_entries.TryRemove(key, out _))
+            // Compare-and-remove, so a request that just re-claimed the key isn't evicted.
+            if (_entries.TryRemove(entry))
                 count++;
         }
 
         return Task.FromResult(count);
     }
+
+    private static ClaimResult Classify(IdempotencyEntry existing, string requestFingerprint)
+    {
+        if (existing.RequestFingerprint != requestFingerprint)
+        {
+            return new ClaimResult.FingerprintMismatch(existing.RequestFingerprint, requestFingerprint);
+        }
+
+        return existing.State == IdempotencyState.Completed
+            ? new ClaimResult.Completed(existing)
+            : new ClaimResult.AlreadyClaimed(existing);
+    }
+
+    private static IdempotencyEntry NewClaim(string key, string requestFingerprint, DateTime now, TimeSpan claimTtl) =>
+        new()
+        {
+            Key = key,
+            RequestFingerprint = requestFingerprint,
+            State = IdempotencyState.Claimed,
+            ClaimedAtUtc = now,
+            ExpiresAtUtc = now.Add(claimTtl),
+            ClaimToken = Guid.NewGuid().ToString("N")
+        };
+
+    private static bool IsHeldBy(IdempotencyEntry entry, string claimToken) =>
+        entry.State == IdempotencyState.Claimed && entry.ClaimToken == claimToken;
 
     private static Dictionary<string, string[]> CloneHeaders(Dictionary<string, string[]> headers)
     {
