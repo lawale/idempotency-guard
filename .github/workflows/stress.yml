@@ -38,7 +38,7 @@ jobs:
         run: dotnet test tests/IdempotencyGuard.Stress.Tests/ --no-build --configuration Release --logger "console;verbosity=detailed"
 
       - name: Benchmarks
-        run: dotnet run --project benchmarks/IdempotencyGuard.Benchmarks --configuration Release --framework net9.0 --no-build -- --filter '*'
+        run: dotnet run --project benchmarks/IdempotencyGuard.Benchmarks --configuration Release --framework net10.0 --no-build -- --filter '*'
 
       - name: Upload benchmark results
         if: always()

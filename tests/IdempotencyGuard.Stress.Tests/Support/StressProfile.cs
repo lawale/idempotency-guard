@@ -24,8 +24,12 @@ public static class StressProfile
     /// <summary>Workers used for sustained throughput runs.</summary>
     public static int Workers => Math.Max(8, Environment.ProcessorCount * 4);
 
-    /// <summary>Rounds of the single-key herd scenario, each with a fresh key.</summary>
-    public static int HerdRounds => 10 * Scale;
+    /// <summary>
+    /// Rounds of the single-key herd scenario, each with a fresh key. Fixed rather
+    /// than scaled: <see cref="HerdSize"/> already scales, so scaling both would
+    /// grow this scenario by the square of <see cref="Scale"/>.
+    /// </summary>
+    public const int HerdRounds = 10;
 
     private static int ReadScale()
     {

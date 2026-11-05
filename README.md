@@ -440,15 +440,15 @@ dotnet test tests/IdempotencyGuard.Stress.Tests/
 IDEMPOTENCY_STRESS_SCALE=10 dotnet test tests/IdempotencyGuard.Stress.Tests/
 ```
 
-Measured overhead on an M2 Pro, .NET 9, in-memory store, via BenchmarkDotNet:
+Measured overhead on .NET 9 with the in-memory store, via BenchmarkDotNet:
 
-| Path | Mean | Allocated |
-|---|---:|---:|
-| Handler with no guard | 8.5 µs | 9.4 KB |
-| Guard, new key | 22.6 µs | 27.1 KB |
-| Guard, replayed response | 16.1 µs | 25.4 KB |
+| Path | M2 Pro | GitHub Actions runner (4 vCPU) | Allocated |
+|---|---:|---:|---:|
+| Handler with no guard | 8.5 µs | 15.6 µs | 9.4 KB |
+| Guard, new key | 22.6 µs | 66.2 µs | 27 KB |
+| Guard, replayed response | 16.1 µs | 56.4 µs | 25.4 KB |
 
-Around 14 µs per first request, 7.6 µs per replay, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs 1.25 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
+Around 14–50 µs per first request and 8–41 µs per replay depending on the machine, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs 1.25–2.07 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
 
 Full numbers, methodology and limitations: [docs/stability-and-performance.md](docs/stability-and-performance.md).
 
