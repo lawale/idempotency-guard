@@ -207,14 +207,37 @@ public sealed class TelemetryTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
-    public async Task Oversized_response_releases_with_reason_response_too_large()
+    public async Task Oversized_response_that_may_rerun_releases_with_reason_response_too_large()
     {
-        var client = await StartAsync(CreatedAsync, options => options.MaxResponseBodySize = 1);
+        var client = await StartAsync(CreatedAsync, options =>
+        {
+            options.MaxResponseBodySize = 1;
+            options.OversizedResponse = OversizedResponseBehavior.RunHandlerAgain;
+        });
 
         var response = await client.SendAsync(Post(NewKey()));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         ReleaseReasons().Should().Equal("response_too_large");
+        OversizedBehaviors().Should().Equal("run_handler_again");
+    }
+
+    [Fact]
+    public async Task Rejected_retry_counts_separately_from_replays_and_conflicts()
+    {
+        var client = await StartAsync(CreatedAsync, options => options.MaxResponseBodySize = 1);
+        var key = NewKey();
+
+        await client.SendAsync(Post(key));
+        var retry = await client.SendAsync(Post(key));
+
+        retry.StatusCode.Should().Be(HttpStatusCode.Gone);
+        OversizedBehaviors().Should().Equal("reject_retries");
+        Count("idempotency.replays.rejected").Should().Be(1);
+        Count(Replays).Should().Be(0);
+        Count(Conflicts).Should().Be(0);
+        Count(Released).Should().Be(0);
+        await ResultsShouldBeAsync("claimed", "not_replayable");
     }
 
     [Fact]
@@ -279,6 +302,11 @@ public sealed class TelemetryTests : IAsyncLifetime, IDisposable
     private string[] ReleaseReasons() => _measurements
         .Where(m => m.Name == Released)
         .Select(m => m.Tags.Single(tag => tag.Key == "reason").Value as string ?? "")
+        .ToArray();
+
+    private string[] OversizedBehaviors() => _measurements
+        .Where(m => m.Name == "idempotency.responses.oversized")
+        .Select(m => m.Tags.Single(tag => tag.Key == "behavior").Value as string ?? "")
         .ToArray();
 
     // The first request's claim and the waiter's first attempt are both recorded by then.

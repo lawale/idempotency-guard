@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Logs and spans now carry the store key's digest, so a log line leads straight to its row
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope
 - **Breaking:** `FingerprintResult` no longer has a `RequestBody`, which nothing read
+- **Breaking:** a retry of a response over `MaxResponseBodySize` now gets a 410 with the original status, rather than running the handler again. `OversizedResponse = OversizedResponseBehavior.RunHandlerAgain` keeps the old behaviour, globally or per policy
+- `ShouldStoreResponse` is now checked before the response size, so an oversized response it refuses still reruns
 - `idempotency.conflicts.total` now counts 409 responses only, rather than every request that found the key in progress. Waiters that time out now count
 - `idempotency.replays.total` no longer counts a replay that found no response and returned a 409
 - `idempotency.claims.released` has a `reason` tag (`failure`, `response_too_large`, `should_store_response`), and no longer counts a release when the claim was already gone
@@ -48,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `MaxKeyLength` limits the keys accepted from clients. The default is 1024, and 0 disables the check
 - `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds about 1 ms per minimal API endpoint with typed parameters. It reports unknown policies, and routes left unscoped while others have a scope
 - `IdempotencyStoreKey.For` computes the store key for a client's key, for debugging
+- `idempotency.responses.oversized` and `idempotency.replays.rejected` counters
 - `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
 - BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size

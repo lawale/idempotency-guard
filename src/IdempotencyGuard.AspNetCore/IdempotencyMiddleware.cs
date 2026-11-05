@@ -18,6 +18,7 @@ public class IdempotencyMiddleware
     private const string ReplayedResult = "replayed";
     private const string ConflictResult = "conflict";
     private const string FingerprintMismatchResult = "fingerprint_mismatch";
+    private const string NotReplayableResult = "not_replayable";
 
     private readonly RequestDelegate _next;
     private readonly IIdempotencyStore _store;
@@ -155,7 +156,8 @@ public class IdempotencyMiddleware
             result.Fingerprint,
             claimTtl,
             responseTtl,
-            policy?.ShouldStoreResponse ?? _options.ShouldStoreResponse);
+            policy?.ShouldStoreResponse ?? _options.ShouldStoreResponse,
+            policy?.OversizedResponse ?? _options.OversizedResponse);
 
         var claimResult = await TryClaimAsync(request, requestAborted);
 
@@ -314,16 +316,12 @@ public class IdempotencyMiddleware
 
             var statusCode = httpContext.Response.StatusCode;
 
-            if (!responseBody.TryGetBuffer(out var responseBuffer)
-                || responseBuffer.Count > _options.MaxResponseBodySize)
-            {
-                claimSettled = true;
-                await ReleaseClaimAsync(request, claimToken, "response_too_large");
-                _logger.LogWarning(
-                    "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
-                    request.KeyHash, _options.MaxResponseBodySize);
-            }
-            else if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
+            var oversized = !responseBody.TryGetBuffer(out var responseBuffer)
+                || responseBuffer.Count > _options.MaxResponseBodySize;
+
+            // Checked first: an oversized response that retries are meant to rerun, such as a
+            // 500, shouldn't be turned away for its size.
+            if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
             {
                 claimSettled = true;
                 await ReleaseClaimAsync(request, claimToken, "should_store_response");
@@ -331,25 +329,47 @@ public class IdempotencyMiddleware
                     "Response with status {StatusCode} for key {KeyHash} not stored, claim released",
                     statusCode, request.KeyHash);
             }
+            else if (oversized && request.OversizedResponse == OversizedResponseBehavior.RunHandlerAgain)
+            {
+                IdempotencyMetrics.OversizedResponses.Add(1, new KeyValuePair<string, object?>("behavior", "run_handler_again"));
+                claimSettled = true;
+                await ReleaseClaimAsync(request, claimToken, "response_too_large");
+                _logger.LogWarning(
+                    "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
+                    request.KeyHash, _options.MaxResponseBodySize);
+            }
             else
             {
-                var headers = new Dictionary<string, string[]>();
-                foreach (var header in httpContext.Response.Headers)
+                IdempotentResponse idempotentResponse;
+                if (oversized)
                 {
-                    if (HeaderFilter.ShouldStoreHeader(header.Key, _options))
-                    {
-                        headers[header.Key] = header.Value.ToArray()!;
-                    }
+                    IdempotencyMetrics.OversizedResponses.Add(1, new KeyValuePair<string, object?>("behavior", "reject_retries"));
+                    _logger.LogWarning(
+                        "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), retries will get a 410",
+                        request.KeyHash, _options.MaxResponseBodySize);
+                    idempotentResponse = IdempotencyResponseWriter.CreateNotReplayableMarker(statusCode);
                 }
-
-                var idempotentResponse = new IdempotentResponse
+                else
                 {
-                    StatusCode = statusCode,
-                    Headers = headers,
-                    Body = responseBuffer.Count == responseBuffer.Array!.Length
-                        ? responseBuffer.Array
-                        : responseBuffer.AsSpan().ToArray()
-                };
+                    var headers = new Dictionary<string, string[]>();
+                    foreach (var header in httpContext.Response.Headers)
+                    {
+                        if (HeaderFilter.ShouldStoreHeader(header.Key, _options)
+                            && !IdempotencyResponseWriter.IsMarkerHeader(header.Key))
+                        {
+                            headers[header.Key] = header.Value.ToArray()!;
+                        }
+                    }
+
+                    idempotentResponse = new IdempotentResponse
+                    {
+                        StatusCode = statusCode,
+                        Headers = headers,
+                        Body = responseBuffer.Count == responseBuffer.Array!.Length
+                            ? responseBuffer.Array
+                            : responseBuffer.AsSpan().ToArray()
+                    };
+                }
 
                 // Deliberately not cancellable. The handler's side effects have already happened,
                 // so a client hanging up now must not lose the response that makes retries safe.
@@ -367,7 +387,7 @@ public class IdempotencyMiddleware
                 {
                     _logger.LogInformation(
                         "Idempotent response stored for key {KeyHash}, status {StatusCode}",
-                        request.KeyHash, statusCode);
+                        request.KeyHash, idempotentResponse.StatusCode);
                 }
                 else
                 {
@@ -443,6 +463,25 @@ public class IdempotencyMiddleware
             return ConflictResult;
         }
 
+        return await WriteStoredResponseAsync(httpContext, request, response);
+    }
+
+    private async Task<string> WriteStoredResponseAsync(
+        HttpContext httpContext,
+        GuardedRequest request,
+        IdempotentResponse response)
+    {
+        if (IdempotencyResponseWriter.TryGetNotReplayableStatus(response, out var originalStatusCode))
+        {
+            IdempotencyMetrics.ReplaysRejected.Add(1);
+            _logger.LogInformation(
+                "Rejecting retry for key {KeyHash}: the original response, status {StatusCode}, was too large to store",
+                request.KeyHash, originalStatusCode);
+
+            await _responseWriter.WriteNotReplayableAsync(httpContext, originalStatusCode, request.RawKey);
+            return NotReplayableResult;
+        }
+
         IdempotencyMetrics.ReplaysTotal.Add(1);
         _logger.LogInformation("Replaying idempotent response for key {KeyHash}, original status {StatusCode}", request.KeyHash, response.StatusCode);
 
@@ -492,11 +531,7 @@ public class IdempotencyMiddleware
                     var response = await GetResponseAsync(request, requestAborted);
                     if (response is not null)
                     {
-                        IdempotencyMetrics.ReplaysTotal.Add(1);
-                        _logger.LogInformation("Replaying idempotent response after wait for key {KeyHash}", request.KeyHash);
-
-                        await _responseWriter.ReplayAsync(httpContext, response);
-                        return ReplayedResult;
+                        return await WriteStoredResponseAsync(httpContext, request, response);
                     }
                     break;
 
@@ -541,5 +576,6 @@ public class IdempotencyMiddleware
         string Fingerprint,
         TimeSpan ClaimTtl,
         TimeSpan ResponseTtl,
-        Func<int, bool>? ShouldStoreResponse);
+        Func<int, bool>? ShouldStoreResponse,
+        OversizedResponseBehavior OversizedResponse);
 }

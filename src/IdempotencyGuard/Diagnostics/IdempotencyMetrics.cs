@@ -16,6 +16,14 @@ public static class IdempotencyMetrics
         "idempotency.replays.total",
         description: "Stored responses replayed to a client");
 
+    public static readonly Counter<long> ReplaysRejected = Meter.CreateCounter<long>(
+        "idempotency.replays.rejected",
+        description: "410 responses for retries whose original response was too large to store");
+
+    public static readonly Counter<long> OversizedResponses = Meter.CreateCounter<long>(
+        "idempotency.responses.oversized",
+        description: "Responses too large to store, tagged with a behavior: reject_retries or run_handler_again");
+
     public static readonly Counter<long> ClaimsTotal = Meter.CreateCounter<long>(
         "idempotency.claims.total",
         description: "New claims created");
