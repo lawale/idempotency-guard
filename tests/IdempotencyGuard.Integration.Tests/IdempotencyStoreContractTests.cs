@@ -146,6 +146,34 @@ public abstract class IdempotencyStoreContractTests
         results.OfType<ClaimResult.AlreadyClaimed>().Should().HaveCount(9);
     }
 
+    [Fact]
+    public async Task TryClaim_expired_completed_entry_allows_new_claim()
+    {
+        var key = UniqueKey();
+        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
+        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
+
+        await Task.Delay(300);
+
+        var result = await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
+
+        result.Should().BeOfType<ClaimResult.Claimed>();
+    }
+
+    [Fact]
+    public async Task TryClaim_expired_completed_entry_with_different_fingerprint_allows_new_claim()
+    {
+        var key = UniqueKey();
+        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
+        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
+
+        await Task.Delay(300);
+
+        var result = await Store.TryClaimAsync(key, "fp-2", DefaultClaimTtl);
+
+        result.Should().BeOfType<ClaimResult.Claimed>();
+    }
+
     protected static IdempotentResponse CreateResponse(int statusCode, string body) =>
         new()
         {

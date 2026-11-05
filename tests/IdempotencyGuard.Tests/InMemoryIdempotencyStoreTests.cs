@@ -178,4 +178,28 @@ public class InMemoryIdempotencyStoreTests : IDisposable
         _store.Dispose();
         GC.SuppressFinalize(this);
     }
+
+    [Fact]
+    public async Task Response_stored_after_claim_was_purged_does_not_cause_fingerprint_mismatch_on_retry()
+    {
+        // A handler outlives ClaimTtl and the cleanup sweep removes its claim before it finishes.
+        await _store.TryClaimAsync("key-purged", "fingerprint-1", TimeSpan.FromMilliseconds(1));
+        await Task.Delay(20);
+        await _store.PurgeExpiredAsync(100);
+
+        await _store.SetResponseAsync(
+            "key-purged",
+            new IdempotentResponse
+            {
+                StatusCode = 201,
+                Headers = new Dictionary<string, string[]>(),
+                Body = Encoding.UTF8.GetBytes("ok")
+            },
+            TimeSpan.FromHours(1));
+
+        var retry = await _store.TryClaimAsync("key-purged", "fingerprint-1", TimeSpan.FromMinutes(5));
+
+        retry.Should().NotBeOfType<ClaimResult.FingerprintMismatch>(
+            "the retry carries the same payload as the request that produced the response");
+    }
 }

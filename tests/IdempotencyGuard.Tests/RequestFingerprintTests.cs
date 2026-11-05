@@ -318,4 +318,41 @@ public class RequestFingerprintTests
 
         hash1.Should().Be(hash2);
     }
+
+    [Theory]
+    [InlineData("""{"a":1,"a":2}""")]
+    [InlineData("""{"outer":{"a":1,"a":2}}""")]
+    [InlineData("""[{"a":1,"a":2}]""")]
+    public void Compute_does_not_throw_on_duplicate_json_properties(string json)
+    {
+        var body = Encoding.UTF8.GetBytes(json);
+
+        var act = () => RequestFingerprint.Compute("POST", "/payments", body);
+
+        act.Should().NotThrow("duplicate properties are valid input to JsonDocument and must not fail the request");
+    }
+
+    [Theory]
+    [InlineData("""{"amount":1,"amount":2,"currency":"USD"}""")]
+    [InlineData("""{"amount":{"value":1,"value":2},"currency":"USD"}""")]
+    public void ExtractProperties_does_not_throw_on_duplicate_json_properties(string json)
+    {
+        var body = Encoding.UTF8.GetBytes(json);
+
+        var act = () => RequestFingerprint.ExtractProperties(body, ["amount"]);
+
+        act.Should().NotThrow("duplicate properties are valid input to JsonDocument and must not fail the request");
+    }
+
+    [Fact]
+    public void Number_and_string_with_the_same_text_produce_different_hashes()
+    {
+        var number = Encoding.UTF8.GetBytes("""{"amount":1}""");
+        var text = Encoding.UTF8.GetBytes("""{"amount":"1"}""");
+
+        var numberHash = RequestFingerprint.Compute("POST", "/payments", number);
+        var textHash = RequestFingerprint.Compute("POST", "/payments", text);
+
+        numberHash.Should().NotBe(textHash);
+    }
 }
