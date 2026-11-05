@@ -4,7 +4,7 @@ Two questions come up often enough to deserve a written answer: is this safe to 
 
 ## Where the code came from
 
-IdempotencyGuard.NET was extracted from a payments service that runs in production. The claim-then-process pattern, the fingerprint check, the expired-claim takeover and the downstream key propagation all exist because each one was needed to stop a specific class of duplicate charge. The open-source version is that code with the service-specific bits removed and a store abstraction put in their place.
+IdempotencyGuard.NET started with a need for it in production, and I built it as something I could share publicly.
 
 That's an origin story, not evidence. So the repo carries a stress suite whose whole job is to try to break the guarantee, plus benchmarks that put a number on the overhead.
 
@@ -101,7 +101,7 @@ If your endpoints take large bodies, use one of the knobs:
 - `[Idempotent(FingerprintProperties = ["Amount", "Currency"])]` narrows the hash to the fields that decide whether two requests are the same. Extraction from a 64 KB body takes 225 µs, and the hash then runs over the handful of extracted bytes instead of all 64 KB: about 230 µs total against 1.25 ms, and roughly 1.6 KB of managed allocation against 1.63 MB.
 - `options.MaxFingerprintBodySize` caps how many bytes are read. Setting it to 0 skips body hashing entirely, at the cost of no longer detecting a changed payload.
 
-For the payment-sized payloads this library was written for, a few hundred bytes to a couple of KB, the default is fine.
+For payloads of a few hundred bytes to a couple of KB, the default is fine.
 
 ## What this doesn't prove
 

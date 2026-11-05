@@ -5,7 +5,7 @@
 
 Idempotency-Key middleware for ASP.NET Core. A client retries, or sends the same request twice at once, and your handler still runs one time: the first request claims the key and later ones get its stored response. Claims stay atomic across instances on Redis, PostgreSQL or SQL Server.
 
-It came out of a payments service running in production, so duplicate charges shaped the design. It works on any endpoint where running a request twice does damage, in controllers and minimal APIs alike. The [stress suite and overhead numbers](docs/stability-and-performance.md) show what's been tested, and what hasn't.
+It started with a need for this in production, and I built it as something I could share publicly. It works on any endpoint where running a request twice does damage, in controllers and minimal APIs alike. The [stress suite and overhead numbers](docs/stability-and-performance.md) show what's been tested, and what hasn't.
 
 ## Why
 
@@ -429,7 +429,7 @@ builder.Services.AddHealthChecks()
 
 ## Stability and Performance
 
-The library was extracted from a payments service running in production, and the repo backs that up with a stress suite that tries to break the idempotency guarantee under load.
+The repo carries a stress suite that tries to break the idempotency guarantee under load.
 
 `tests/IdempotencyGuard.Stress.Tests` runs six concurrency scenarios against every store (in-memory, Redis, PostgreSQL, SQL Server) on real Testcontainers instances, plus six end-to-end scenarios through the ASP.NET Core pipeline: thundering herds on one key, interleaved multi-key load, mutual exclusion on claim/release cycles, racing fingerprints, read storms on a completed entry, and expired-claim takeover. 36 tests, all green, run before every release.
 
