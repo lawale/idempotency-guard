@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using IdempotencyGuard.Diagnostics;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -8,6 +9,10 @@ namespace IdempotencyGuard.AspNetCore;
 
 public class IdempotencyMiddleware
 {
+    // AuthorizationMiddleware sets this item when it runs. EndpointMiddleware reads the same
+    // item to detect endpoints that have authorization metadata but were never authorized.
+    private const string AuthorizationInvokedItemKey = "__AuthorizationMiddlewareWithEndpointInvoked";
+
     private readonly RequestDelegate _next;
     private readonly IIdempotencyStore _store;
     private readonly IDownstreamKeyGenerator _keyGenerator;
@@ -56,6 +61,7 @@ public class IdempotencyMiddleware
         }
 
         var endpoint = httpContext.GetEndpoint();
+        ThrowIfAuthorizationHasNotRun(httpContext, endpoint);
 
         // Read [Idempotent] attributes from endpoint metadata
         var idempotentAttr = endpoint is null
@@ -161,6 +167,33 @@ public class IdempotencyMiddleware
     }
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A guard that runs before authorization replays stored responses to callers who would
+    /// have been rejected, and stores their 401s where the rightful caller's retry finds them.
+    /// </summary>
+    private void ThrowIfAuthorizationHasNotRun(HttpContext httpContext, Endpoint? endpoint)
+    {
+        if (endpoint is null
+            || _options.SuppressAuthorizationOrderCheck
+            || httpContext.Items.ContainsKey(AuthorizationInvokedItemKey)
+            || endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+        {
+            return;
+        }
+
+        var requiresAuthorization = endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null
+            || endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is not null
+            || endpoint.Metadata.GetMetadata<IAuthorizationRequirementData>() is not null;
+
+        if (requiresAuthorization)
+        {
+            throw new InvalidOperationException(
+                $"Endpoint '{endpoint.DisplayName}' requires authorization, but UseIdempotencyGuard() ran before it. " +
+                "A guard that runs first serves stored responses to unauthorized callers. " +
+                "Call UseAuthentication() and UseAuthorization() before UseIdempotencyGuard().");
+        }
+    }
 
     private IdempotencyPolicy? ResolvePolicy(IdempotentAttribute? attribute)
     {

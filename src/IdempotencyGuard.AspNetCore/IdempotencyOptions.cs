@@ -81,6 +81,13 @@ public class IdempotencyOptions
     public bool SuppressUnscopedKeysWarning { get; set; }
 
     /// <summary>
+    /// Disables the check that authorization ran before the guard on endpoints that
+    /// require it. Leave this off unless authorization is enforced some other way:
+    /// a guard that runs first replays stored responses to unauthorized callers.
+    /// </summary>
+    public bool SuppressAuthorizationOrderCheck { get; set; }
+
+    /// <summary>
     /// Registers a named policy that endpoints select with
     /// <see cref="AspNetCore.IdempotentAttribute.Policy"/>. Anything the policy leaves
     /// unset falls back to the global value on these options.
