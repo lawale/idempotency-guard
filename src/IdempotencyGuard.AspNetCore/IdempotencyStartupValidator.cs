@@ -29,9 +29,20 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
 
     public Task StartedAsync(CancellationToken cancellationToken)
     {
+        ThrowIfKeyPrefixIsTooLong();
         ThrowIfAnyEndpointUsesUnknownPolicy();
         WarnIfKeysAreUnscoped();
         return Task.CompletedTask;
+    }
+
+    private void ThrowIfKeyPrefixIsTooLong()
+    {
+        if (_options.KeyPrefix?.Length > IdempotencyStoreKey.MaxPrefixLength)
+        {
+            throw new InvalidOperationException(
+                $"IdempotencyOptions.KeyPrefix is {_options.KeyPrefix.Length} characters, " +
+                $"over the limit of {IdempotencyStoreKey.MaxPrefixLength}.");
+        }
     }
 
     private void ThrowIfAnyEndpointUsesUnknownPolicy()

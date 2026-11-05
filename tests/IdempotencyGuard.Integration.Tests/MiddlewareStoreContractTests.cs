@@ -25,6 +25,10 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
     private static readonly TimeSpan PastClaimTtl = ClaimTtl + TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(30);
 
+    // Longer than the SQL Server key column (256 characters) and the largest key
+    // a PostgreSQL btree index accepts (2704 bytes).
+    private const int LongKeyLength = 4096;
+
     private readonly ConcurrentDictionary<string, int> _runs = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource> _entered = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _gates = new();
@@ -52,6 +56,7 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
                         options.ConcurrentRequestPolicy = ConcurrentRequestPolicy.ReturnConflict;
                         options.Cleanup.Enabled = false;
                         options.AddPolicy("scoped", policy => policy.KeyScope = _ => "tenant");
+                        options.MaxKeyLength = LongKeyLength;
                     });
                     ConfigureStore(services);
                     services.AddRouting();
@@ -77,6 +82,7 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
                         endpoints.MapPost("/gated", GatedHandlerAsync);
                         endpoints.MapPost("/abort", AbortingHandlerAsync);
                         endpoints.MapPost("/scoped", CreatedHandlerAsync).RequireIdempotency(o => o.Policy = "scoped");
+                        endpoints.MapPost("/unscoped", CreatedHandlerAsync);
                     });
                 });
             })
@@ -119,26 +125,39 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
         retry.Headers.Contains("X-Idempotent-Replayed").Should().BeTrue();
     }
 
-    [Fact]
-    public async Task Longest_allowed_key_works_with_a_scope_on_every_store()
+    [Theory]
+    [InlineData("/scoped")]
+    [InlineData("/unscoped")]
+    public async Task Key_longer_than_any_store_limit_works_on_every_store(string path)
     {
-        var key = $"{UniqueKey()}{new string('k', 200)}"[..200];
+        var key = RandomKey(LongKeyLength);
 
-        var first = await _client!.SendAsync(Post("/scoped", key, "A"));
-        var retry = await _client!.SendAsync(Post("/scoped", key, "A"));
+        var first = await _client!.SendAsync(Post(path, key, "A"));
+        var retry = await _client!.SendAsync(Post(path, key, "A"));
 
         first.StatusCode.Should().Be(HttpStatusCode.Created);
         retry.Headers.Contains("X-Idempotent-Replayed").Should().BeTrue();
     }
 
     [Fact]
-    public async Task Oversized_key_is_rejected_with_a_400_on_every_store()
+    public async Task Key_over_MaxKeyLength_is_rejected_with_a_400_on_every_store()
     {
-        var key = $"{UniqueKey()}{new string('k', 300)}";
+        var key = RandomKey(LongKeyLength + 1);
 
         var response = await _client!.SendAsync(Post("/scoped", key, "A"));
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Keys_differing_only_by_case_are_separate_on_every_store()
+    {
+        var key = $"key-{Guid.NewGuid():N}";
+
+        await _client!.SendAsync(Post("/unscoped", key.ToLowerInvariant(), "A"));
+        var response = await _client!.SendAsync(Post("/unscoped", key.ToUpperInvariant(), "A"));
+
+        response.Headers.Contains("X-Idempotent-Replayed").Should().BeFalse();
     }
 
     [Fact]
@@ -257,6 +276,10 @@ public abstract class MiddlewareStoreContractTests : IAsyncLifetime
         _gates.GetOrAdd(who, _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
 
     private static string UniqueKey() => $"mw-{Guid.NewGuid():N}";
+
+    // Random, because PostgreSQL compresses index entries: a repetitive key would fit its limit.
+    private static string RandomKey(int length) =>
+        string.Concat(Enumerable.Range(0, (length / 32) + 1).Select(_ => Guid.NewGuid().ToString("N")))[..length];
 
     private static HttpRequestMessage Post(string path, string key, string who)
     {

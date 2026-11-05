@@ -190,7 +190,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     {
         var client = await StartAsync(CreatedHandler);
 
-        var response = await client.SendAsync(Post(new string('k', 200)));
+        var response = await client.SendAsync(Post(new string('k', 1024)));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }
@@ -205,7 +205,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
             return new { kind = problem.Kind.ToString() };
         });
 
-        var response = await client.SendAsync(Post(new string('k', 201)));
+        var response = await client.SendAsync(Post(new string('k', 1025)));
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain(nameof(IdempotencyErrorKind.InvalidKey));
@@ -227,7 +227,7 @@ public class MiddlewareEdgeCaseTests : IAsyncLifetime
     {
         var client = await StartAsync(CreatedHandler, options => options.MaxKeyLength = 0);
 
-        var response = await client.SendAsync(Post(new string('k', 500)));
+        var response = await client.SendAsync(Post(new string('k', 5000)));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }

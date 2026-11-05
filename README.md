@@ -133,9 +133,8 @@ builder.Services.AddIdempotencyGuard(options =>
     // Set to 0 to skip body hashing entirely.
     options.MaxFingerprintBodySize = 1_048_576;
 
-    // Longest key accepted from a client (default: 200). Longer keys get a 400. Set to 0 to disable.
-    // The SQL Server store's key column holds 256 characters, including any scope (33) and prefix.
-    options.MaxKeyLength = 200;
+    // Longest key accepted from a client (default: 1024). Longer keys get a 400. Set to 0 to disable.
+    options.MaxKeyLength = 1024;
 
     // Who a key belongs to. Set this on any API with more than one caller.
     options.KeyScope = context => context.User.FindFirstValue("sub");
@@ -369,7 +368,27 @@ app.Use(async (context, next) =>
 });
 ```
 
-A key `abc-123` with prefix `prod:` is stored as `prod:abc-123`.
+The prefix is limited to 128 characters.
+
+## Store Keys
+
+Stores never see the client's key. An entry is stored under the prefix followed by a 32-character digest (the first 16 bytes of a SHA-256) of the scope and the client's key:
+
+```
+prod:9f86d081884c7d659a2feaa0c55ad015
+```
+
+The length is fixed, so a key can't overflow a column or an index, whichever store you use. Keys are also compared the same way on every store: SQL Server's default collation would otherwise treat `abc` and `ABC` as the same key. The prefix stays readable, so `SCAN idempotency:prod:*` and `WHERE [Key] LIKE 'tenant-42:%'` still work.
+
+To find the entry for a key while debugging, compute its store key, or take the `KeyHash` from a log line, which is the same digest:
+
+```csharp
+var storeKey = IdempotencyStoreKey.For("abc-123", scope: "alice", policyName: "user", prefix: "prod:");
+```
+
+Pass `policyName` only if that policy defines its own `KeyScope`.
+
+`IIdempotencyContext.Key` and downstream keys don't use this format. They still derive from the prefix, scope and client's key.
 
 ## Stores
 
@@ -522,7 +541,7 @@ builder.Services.AddOpenTelemetry()
     });
 ```
 
-Logs and spans identify a request by `KeyHash` / `idempotency.key_hash`, a truncated SHA-256 of the store key. The raw key can replay a stored response, so it isn't recorded.
+Logs and spans identify a request by `KeyHash` / `idempotency.key_hash`, the digest from the [store key](#store-keys). The raw key can replay a stored response, so it isn't recorded.
 
 ## Health Check
 

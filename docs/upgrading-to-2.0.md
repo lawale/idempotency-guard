@@ -33,13 +33,17 @@ ALTER TABLE idempotency_entries ADD COLUMN IF NOT EXISTS claim_token TEXT;
 ALTER TABLE [IdempotencyEntries] ADD ClaimToken NVARCHAR(64) NULL;
 ```
 
-1.x instances keep working with the column in place, so you can add it ahead of a rolling deploy. Responses stored by 1.x still replay, and abandoned 1.x claims can still be taken over.
+1.x instances keep working with the column in place, so you can add it ahead of the deploy.
 
-### 3. Expect 422s on retries that span the upgrade
+### 3. Retries that span the upgrade run the handler again
 
-Numbers now hash as numbers, so `{"amount":1}` and `{"amount":"1"}` no longer share a fingerprint. That changes the fingerprint of any JSON body containing a number.
+Store keys are now a prefix followed by a fixed-length digest, rather than the client's key. **Entries stored by 1.x can't be found under the new keys**, so a retry of a request that completed on 1.x runs the handler again.
 
-If a request completed on 1.x and is retried on 2.0 with the same key, the retry gets a **422 until the stored entry expires** (`ResponseTtl`, 24 hours by default). The handler doesn't run again, so this can't cause a duplicate, but clients will see errors. If your clients retry across long windows, deploy at a quiet time or warn them.
+- **Downstream keys don't change** when you upgrade, so a payment provider still catches a duplicate from a call that used `DownstreamKey`. Other side effects aren't protected.
+- **Don't run 1.x and 2.0 side by side.** They compute different keys for the same request, so neither sees the other's claims, and concurrent duplicates can both run. Replace all instances at once rather than in a rolling deploy.
+- **Deploy at a quiet time and let in-flight retries drain first.** Most retries happen within minutes, so the exposure is small if you do.
+
+Old entries do no harm. They expire through the cleanup service or Redis key TTL as usual.
 
 ### 4. Turning on key scoping changes every key
 
@@ -68,12 +72,15 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 
 ### Telemetry
 
-- Logs carry `KeyHash` instead of `Key`, and spans carry `idempotency.key_hash` instead of `idempotency.key`. The value is a truncated SHA-256 of the store key, so it still correlates requests but can't be used to replay a response. Update any dashboards or log queries that use the old names.
+- Logs carry `KeyHash` instead of `Key`, and spans carry `idempotency.key_hash` instead of `idempotency.key`. The value is the digest from the store key, so it correlates requests and leads to the row, but can't be used to replay a response. Update any dashboards or log queries that use the old names.
 - New counter: `idempotency.claims.lost`. It counts responses that weren't stored because the handler outlived `ClaimTtl` and the claim was taken over. If it's above zero, raise `ClaimTtl`.
 
 ### Behaviour
 
-- Keys longer than `MaxKeyLength` (200 characters by default), or containing control characters, are rejected with a 400. Previously, a key too long for SQL Server's 256-character column caused a 500, and the other stores accepted any length. If your clients send longer keys, raise `MaxKeyLength`. On SQL Server the limit is 256 characters including any scope (33) and prefix, so the default leaves room for a prefix of up to 23.
+- Keys longer than `MaxKeyLength` (1024 characters by default), or containing control characters, are rejected with a 400. Previously, long keys failed with a 500 on SQL Server (over 256 characters) and PostgreSQL (over about 2.7 KB). If your clients send longer keys, raise `MaxKeyLength`, which is now safe on every store.
+- `KeyPrefix` is limited to 128 characters. A longer configured prefix fails at startup, and a longer per-request prefix fails the request.
+- Keys differing only by case are now separate on SQL Server, matching the other stores.
+- Numbers now hash as numbers in fingerprints, so `{"amount":1}` and `{"amount":"1"}` no longer match.
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope.
 - A request that waited under `WaitThenReplay` now takes over if the original request fails, rather than timing out with a 409.
 - A client disconnecting no longer cancels the response write. On the SQL stores, this used to discard the response and release the claim, so the retry ran the handler a second time.

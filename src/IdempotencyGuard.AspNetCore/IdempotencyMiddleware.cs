@@ -107,7 +107,21 @@ public class IdempotencyMiddleware
             ? perRequestPrefix
             : _options.KeyPrefix;
 
+        if (keyPrefix?.Length > IdempotencyStoreKey.MaxPrefixLength)
+        {
+            throw new InvalidOperationException(
+                $"The idempotency key prefix for this request is {keyPrefix.Length} characters, " +
+                $"over the limit of {IdempotencyStoreKey.MaxPrefixLength}.");
+        }
+
+        // The key the application sees, which downstream keys derive from. It's separate from
+        // the store key so that the storage format can't change what a payment provider receives.
         var idempotencyKey = string.Concat(keyPrefix, scopeSegment, rawKey);
+
+        // The digest also identifies the request in logs and spans, so a log line leads
+        // straight to its row, and the raw key can't be recovered from either.
+        var keyHash = IdempotencyStoreKey.Digest(scopeSegment, rawKey);
+        var storeKey = string.Concat(keyPrefix, keyHash);
 
         // Per-endpoint TTL overrides
         var claimTtl = idempotentAttr?.ClaimTtlSeconds > 0
@@ -120,8 +134,6 @@ public class IdempotencyMiddleware
 
         IdempotencyMetrics.RequestsTotal.Add(1);
 
-        var keyHash = IdempotencyKeyHash.Compute(idempotencyKey);
-
         using var requestActivity = IdempotencyActivitySource.Source.StartActivity("idempotency.request", ActivityKind.Internal);
         requestActivity?.SetTag("idempotency.key_hash", keyHash);
         requestActivity?.SetTag("http.method", httpContext.Request.Method);
@@ -132,6 +144,7 @@ public class IdempotencyMiddleware
         var request = new GuardedRequest(
             rawKey,
             idempotencyKey,
+            storeKey,
             keyHash,
             result.Fingerprint,
             claimTtl,
@@ -221,10 +234,7 @@ public class IdempotencyMiddleware
     }
 
     /// <summary>
-    /// Builds the part of the store key that isolates one caller from another. The scope is
-    /// hashed to a fixed length, so a scope can't run into the client's key and collide, and
-    /// caller identifiers stay out of the store. A policy's own resolver also hashes the
-    /// policy name, so user "abc" and service "abc" stay apart under different policies.
+    /// Resolves the part of the key that isolates one caller from another.
     /// </summary>
     /// <returns><c>false</c> if the resolver could not determine a scope.</returns>
     private bool TryResolveScopeSegment(
@@ -247,8 +257,7 @@ public class IdempotencyMiddleware
             return false;
         }
 
-        var scopeIdentity = policy?.KeyScope is not null ? $"{attribute!.Policy}\0{scope}" : scope;
-        segment = $"{IdempotencyKeyHash.Compute(scopeIdentity)}:";
+        segment = IdempotencyStoreKey.ScopeSegment(scope, policy?.KeyScope is not null ? attribute!.Policy : null);
         return true;
     }
 
@@ -258,7 +267,7 @@ public class IdempotencyMiddleware
         var claimTs = Stopwatch.GetTimestamp();
         using (var claimActivity = IdempotencyActivitySource.StartStoreActivity("claim", request.KeyHash))
         {
-            claimResult = await _store.TryClaimAsync(request.Key, request.Fingerprint, request.ClaimTtl, requestAborted);
+            claimResult = await _store.TryClaimAsync(request.StoreKey, request.Fingerprint, request.ClaimTtl, requestAborted);
             claimActivity?.SetTag("idempotency.claim.result", claimResult switch
             {
                 ClaimResult.Claimed => "claimed",
@@ -341,7 +350,7 @@ public class IdempotencyMiddleware
                 using (IdempotencyActivitySource.StartStoreActivity("set_response", request.KeyHash))
                 {
                     stored = await _store.SetResponseAsync(
-                        request.Key, claimToken, idempotentResponse, request.ResponseTtl, CancellationToken.None);
+                        request.StoreKey, claimToken, idempotentResponse, request.ResponseTtl, CancellationToken.None);
                 }
                 RecordStoreLatency(setTs, "set_response");
                 claimSettled = true;
@@ -388,7 +397,7 @@ public class IdempotencyMiddleware
         var releaseTs = Stopwatch.GetTimestamp();
         using (IdempotencyActivitySource.StartStoreActivity("release", request.KeyHash))
         {
-            await _store.ReleaseClaimAsync(request.Key, claimToken, CancellationToken.None);
+            await _store.ReleaseClaimAsync(request.StoreKey, claimToken, CancellationToken.None);
         }
         RecordStoreLatency(releaseTs, "release");
         IdempotencyMetrics.ClaimsReleased.Add(1);
@@ -400,7 +409,7 @@ public class IdempotencyMiddleware
         var getTs = Stopwatch.GetTimestamp();
         using (IdempotencyActivitySource.StartStoreActivity("get_response", request.KeyHash))
         {
-            response = await _store.GetResponseAsync(request.Key, requestAborted);
+            response = await _store.GetResponseAsync(request.StoreKey, requestAborted);
         }
         RecordStoreLatency(getTs, "get_response");
         return response;
@@ -507,6 +516,7 @@ public class IdempotencyMiddleware
     private sealed record GuardedRequest(
         string RawKey,
         string Key,
+        string StoreKey,
         string KeyHash,
         string Fingerprint,
         TimeSpan ClaimTtl,

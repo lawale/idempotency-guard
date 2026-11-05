@@ -19,6 +19,7 @@ public class PolicyAndScopeTests : IAsyncLifetime
     private IHost? _host;
     private int _handlerCallCount;
     private bool _unknownPolicyEndpoint;
+    private IIdempotencyContext? _captured;
     private readonly ConcurrentDictionary<string, int> _callsPerKey = new();
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -94,6 +95,90 @@ public class PolicyAndScopeTests : IAsyncLifetime
         store.HasKey(key).Should().BeFalse("the key must be scoped");
         store.HasKey($"alice{key}").Should().BeFalse("the caller identifier must not reach the store");
         store.HasKey($"alice:{key}").Should().BeFalse("the caller identifier must not reach the store");
+        store.HasKey(IdempotencyStoreKey.For(key, scope: "alice")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Store_key_is_the_readable_prefix_followed_by_a_digest()
+    {
+        var client = await StartAsync(options => options.KeyPrefix = "prod:");
+        var store = _host!.Services.GetRequiredService<InMemoryIdempotencyStore>();
+        var key = NewKey();
+
+        await client.SendAsync(Post("/default", key));
+
+        store.HasKey($"prod:{key}").Should().BeFalse("the client's key must not reach the store");
+        store.HasKey(IdempotencyStoreKey.For(key, prefix: "prod:")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Policy_scoped_store_key_matches_the_public_helper()
+    {
+        var client = await StartAsync(options =>
+            options.AddPolicy("user", p => p.KeyScope = context => context.Request.Headers["X-Caller"].ToString()));
+        var store = _host!.Services.GetRequiredService<InMemoryIdempotencyStore>();
+        var key = NewKey();
+
+        await client.SendAsync(Post("/user", key, caller: "alice"));
+
+        store.HasKey(IdempotencyStoreKey.For(key, scope: "alice", policyName: "user")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Downstream_key_matches_the_value_1x_produced()
+    {
+        // A literal, computed outside this code. If this changes, a retry spanning the upgrade
+        // sends the payment provider a new key, and the provider won't catch the duplicate.
+        var client = await StartAsync(options => options.KeyPrefix = "prod:");
+
+        await client.SendAsync(Post("/capture", "abc-123"));
+
+        _captured!.Key.Should().Be("prod:abc-123");
+        _captured.DownstreamKey("stripe", "charge").Should().Be("4ae858a26667dab19753b0bf7ddd5d34dcc57db229bf9dc2bcbf690c7acf1c19");
+    }
+
+    [Fact]
+    public async Task Downstream_keys_differ_between_scoped_callers_using_the_same_key()
+    {
+        var client = await StartAsync(options => options.KeyScope = context => context.Request.Headers["X-Caller"].ToString());
+
+        await client.SendAsync(Post("/capture", "abc-123", caller: "alice"));
+        var alice = _captured!.DownstreamKey("stripe", "charge");
+
+        await client.SendAsync(Post("/capture", "abc-123", caller: "bob"));
+        var bob = _captured!.DownstreamKey("stripe", "charge");
+
+        alice.Should().NotBe(bob);
+    }
+
+    [Fact]
+    public async Task KeyPrefix_at_the_limit_is_accepted()
+    {
+        var client = await StartAsync(options => options.KeyPrefix = new string('p', IdempotencyStoreKey.MaxPrefixLength));
+
+        var response = await client.SendAsync(Post("/default", NewKey()));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task KeyPrefix_over_the_limit_fails_startup()
+    {
+        var act = () => StartAsync(options => options.KeyPrefix = new string('p', IdempotencyStoreKey.MaxPrefixLength + 1));
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("KeyPrefix");
+    }
+
+    [Fact]
+    public async Task Per_request_prefix_over_the_limit_fails_the_request()
+    {
+        var client = await StartAsync(_ => { });
+        var request = Post("/default", NewKey());
+        request.Headers.Add("X-Prefix", new string('p', IdempotencyStoreKey.MaxPrefixLength + 1));
+
+        var act = () => client.SendAsync(request);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("prefix");
     }
 
     [Fact]
@@ -273,10 +358,23 @@ public class PolicyAndScopeTests : IAsyncLifetime
                 webBuilder.Configure(app =>
                 {
                     app.UseRouting();
+                    app.Use((context, next) =>
+                    {
+                        // Stands in for middleware that resolves a per-request prefix.
+                        if (context.Request.Headers.TryGetValue("X-Prefix", out var prefix))
+                            context.Items[IdempotencyOptions.DefaultKeyPrefixItemKey] = prefix.ToString();
+
+                        return next(context);
+                    });
                     app.UseIdempotencyGuard();
                     app.UseEndpoints(endpoints =>
                     {
                         endpoints.MapPost("/default", CreatedAsync);
+                        endpoints.MapPost("/capture", context =>
+                        {
+                            _captured = (IIdempotencyContext)context.Items["IdempotencyContext"]!;
+                            return CreatedAsync(context);
+                        });
                         endpoints.MapPost("/user", CreatedAsync).RequireIdempotency(o => o.Policy = "user");
                         endpoints.MapPost("/service", CreatedAsync).RequireIdempotency(o => o.Policy = "service");
                         endpoints.MapPost("/fails-once", FailsOnceAsync);

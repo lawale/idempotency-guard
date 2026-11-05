@@ -39,16 +39,18 @@ public class IdempotencyOptions
     /// <summary>
     /// Prefix prepended to every idempotency key before it is passed to the store.
     /// Use this to namespace keys by environment or tenant (e.g. <c>"staging:"</c>, <c>"tenant-42:"</c>).
+    /// It stays readable in the store, ahead of the digest, so prefix scans still work. Limited to
+    /// <see cref="IdempotencyStoreKey.MaxPrefixLength"/> characters.
     /// Default: <c>null</c> (no prefix). Applied across all store implementations.
     /// </summary>
     public string? KeyPrefix { get; set; }
 
     /// <summary>
     /// Longest idempotency key accepted from a client, in characters. A longer key is rejected
-    /// with a 400. Default: 200, which leaves room for a scope and a short prefix within the
-    /// SQL Server store's 256-character key column. Set to 0 to disable the check.
+    /// with a 400. Stores only see a fixed-length digest, so this is a sanity limit and not a
+    /// storage limit. Default: 1024. Set to 0 to disable the check.
     /// </summary>
-    public int MaxKeyLength { get; set; } = 200;
+    public int MaxKeyLength { get; set; } = 1024;
 
     /// <summary>
     /// The <see cref="HttpContext.Items"/> key used to read
