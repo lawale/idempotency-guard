@@ -5,11 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
+- BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size
+- `docs/stability-and-performance.md` documenting the measured overhead and the limits of what the stress suite proves
+- Stress suite runs in the release workflow, before packages publish. A manual `stress` workflow reruns it at ten times the load and publishes benchmark results
+
+### Changed
+- NuGet packages now carry an icon, link to the GitHub repo instead of the author's site, and point their release notes at this changelog
+- Package descriptions lead with "Idempotency-Key middleware for ASP.NET Core", and tags now include `idempotency-key` (plus `minimal-api` on `IdempotencyGuard.AspNetCore`)
+
+## [1.3.0] - 2026-04-26
+### Added
+- OpenTelemetry tracing for store operations and cleanup through the `IdempotencyGuard` activity source (`IdempotencyDiagnostics.ActivitySourceName`)
+
 ### Changed
 - `IdempotencyGuard.Redis` now owns Redis connection lifecycle internally instead of registering or reusing `IConnectionMultiplexer`
 - Redis connections are created lazily, reconnect on demand, force `AbortOnConnectFail=false`, and throttle reconnect attempts via `RedisIdempotencyOptions.MinimumReconnectInterval`
+- The middleware passes `HttpContext.RequestAborted` to store claim, read and write calls; claim release deliberately ignores it so a disconnect can't strand a claim
+- Redis connections now open asynchronously
 
-## [1.2.3] - 2026-04-03
+### Fixed
+- `InMemoryIdempotencyStore.SetResponseAsync` now swaps the entry atomically, preventing torn reads and an overwrite race with expired-claim takeover
+
+### Performance
+- The in-memory store dropped its own once-a-minute scan for expired entries; `IdempotencyCleanupService` handles expiry instead
+- The in-memory store keeps response headers as a dictionary rather than round-tripping them through JSON
+- Fewer allocations when storing responses: bodies skip an extra copy, and error messages skip an intermediate string conversion
+
+## [1.2.4] - 2026-04-03
 ### Added
 - `ReplayedHeaderName` option on `IdempotencyOptions` to customise the response header name added to replayed responses (default: `X-Idempotent-Replayed`)
 - `KeyPrefixItemKey` option on `IdempotencyOptions` for per-request key prefix overrides via `HttpContext.Items` (default: `IdempotencyKeyPrefix`)
@@ -20,9 +44,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Request body memory is now capped by `MaxFingerprintBodySize` during the read, rather than buffering the full body before truncation
 - Extra fingerprint segments (query/route values) are now URI-encoded before joining, preventing ambiguous collisions when values contain delimiter characters
 
-## [1.2.1] - 2026-03-18
+## [1.2.3] - 2026-03-18
 ### Fixed
 - Bug fix in `IdempotencyGuard.Redis` where LuaScript.Prepare() in `StackExchange.Redis` works by replacing @paramName tokens in the script with the appropriate KEYS[n] or ARGV[n] references
+
+## [1.2.2] - 2026-03-10
+### Added
+- `RequireIdempotency()` extension for configuring idempotency on minimal API endpoints
+
+## [1.2.1] - 2026-03-10
+### Added
+- Package-specific READMEs on NuGet
 
 ## [1.2.0] - 2026-03-10
 

@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard</PackageId>
-    <Description>Core abstractions and in-memory store for idempotent HTTP API request handling. Provides fingerprint-based deduplication, claim/response lifecycle, and pluggable store interfaces.</Description>
-    <PackageTags>idempotency;idempotent;api;http;deduplication;retry;middleware;dotnet;aspnetcore</PackageTags>
+    <Description>Core abstractions and in-memory store for IdempotencyGuard, an Idempotency-Key middleware library for ASP.NET Core. Provides fingerprint-based deduplication, the claim/response lifecycle and pluggable store interfaces.</Description>
+    <PackageTags>idempotency;idempotent;idempotency-key;api;http;deduplication;retry;middleware;dotnet;aspnetcore</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

@@ -1,0 +1,49 @@
+name: Stress
+
+# The release workflow runs the stress suite at its default size before anything
+# is published. Run this one by hand to push the same scenarios an order of
+# magnitude harder and collect benchmarks, for example before a release that
+# touches the concurrency paths.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Stress scale multiplier (1 = the size the release workflow runs)'
+        required: false
+        default: '10'
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Stress Tests
+        env:
+          IDEMPOTENCY_STRESS_SCALE: ${{ github.event.inputs.scale }}
+        run: dotnet test tests/IdempotencyGuard.Stress.Tests/ --no-build --configuration Release --logger "console;verbosity=detailed"
+
+      - name: Benchmarks
+        run: dotnet run --project benchmarks/IdempotencyGuard.Benchmarks --configuration Release --framework net10.0 --no-build -- --filter '*'
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: BenchmarkDotNet.Artifacts/results/
+          retention-days: 30

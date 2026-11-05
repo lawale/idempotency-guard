@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.PostgreSql</PackageId>
-    <Description>PostgreSQL-backed idempotency store using INSERT ON CONFLICT for IdempotencyGuard. Provides durable claim coordination and response caching with automatic schema provisioning.</Description>
-    <PackageTags>idempotency;idempotent;postgresql;postgres;database;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
+    <Description>PostgreSQL store for IdempotencyGuard, an Idempotency-Key middleware library for ASP.NET Core. Uses INSERT ON CONFLICT for durable claim coordination and response caching, with automatic schema provisioning.</Description>
+    <PackageTags>idempotency;idempotent;idempotency-key;postgresql;postgres;database;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

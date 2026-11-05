@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.Redis</PackageId>
-    <Description>Redis-backed idempotency store with atomic Lua scripts for IdempotencyGuard. Provides distributed claim coordination and response caching via StackExchange.Redis.</Description>
-    <PackageTags>idempotency;idempotent;redis;distributed;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
+    <Description>Redis store for IdempotencyGuard, an Idempotency-Key middleware library for ASP.NET Core. Uses atomic Lua scripts for distributed claim coordination and response caching via StackExchange.Redis.</Description>
+    <PackageTags>idempotency;idempotent;idempotency-key;redis;distributed;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

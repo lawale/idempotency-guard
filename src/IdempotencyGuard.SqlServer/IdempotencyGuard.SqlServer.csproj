@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.SqlServer</PackageId>
-    <Description>SQL Server-backed idempotency store using MERGE for IdempotencyGuard. Provides durable claim coordination and response caching with automatic schema provisioning.</Description>
-    <PackageTags>idempotency;idempotent;sqlserver;mssql;database;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
+    <Description>SQL Server store for IdempotencyGuard, an Idempotency-Key middleware library for ASP.NET Core. Uses MERGE for durable claim coordination and response caching, with automatic schema provisioning.</Description>
+    <PackageTags>idempotency;idempotent;idempotency-key;sqlserver;mssql;database;api;http;deduplication;retry;dotnet;aspnetcore</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

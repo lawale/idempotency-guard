@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The library's multi-targeting is covered by the unit and integration
+         suites. The stress suite runs once, on the current LTS runtime,
+         because each extra TFM re-runs the whole load against real containers. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="Testcontainers" />
+    <PackageReference Include="Testcontainers.Redis" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Testcontainers.MsSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\IdempotencyGuard\IdempotencyGuard.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.AspNetCore\IdempotencyGuard.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.Redis\IdempotencyGuard.Redis.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.PostgreSql\IdempotencyGuard.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\IdempotencyGuard.SqlServer\IdempotencyGuard.SqlServer.csproj" />
+  </ItemGroup>
+
+</Project>
