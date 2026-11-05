@@ -30,7 +30,7 @@ Through the middleware, with a handler that takes 50 ms so concurrent requests r
 - A handler that throws releases its claim, and the retry succeeds rather than hanging.
 - Half a herd sends a tampered amount under the same key: the tampered half gets 422, the handler still runs once.
 
-All 36 pass, in about 20 seconds once the containers are up. CI runs them on every push at the default size. A weekly workflow (`.github/workflows/stress.yml`) reruns everything at ten times the load and publishes the benchmark output.
+All 36 pass, in about 20 seconds once the containers are up. The release workflow runs them at the default size and won't publish a package if they fail. A manual workflow (`.github/workflows/stress.yml`) reruns everything at ten times the load by default and publishes the benchmark output.
 
 To push harder locally:
 

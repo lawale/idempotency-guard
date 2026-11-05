@@ -431,7 +431,7 @@ builder.Services.AddHealthChecks()
 
 The library was extracted from a payments service running in production, and the repo backs that up with a stress suite that tries to break the idempotency guarantee under load.
 
-`tests/IdempotencyGuard.Stress.Tests` runs six concurrency scenarios against every store (in-memory, Redis, PostgreSQL, SQL Server) on real Testcontainers instances, plus six end-to-end scenarios through the ASP.NET Core pipeline: thundering herds on one key, interleaved multi-key load, mutual exclusion on claim/release cycles, racing fingerprints, read storms on a completed entry, and expired-claim takeover. 36 tests, all green, run on every push.
+`tests/IdempotencyGuard.Stress.Tests` runs six concurrency scenarios against every store (in-memory, Redis, PostgreSQL, SQL Server) on real Testcontainers instances, plus six end-to-end scenarios through the ASP.NET Core pipeline: thundering herds on one key, interleaved multi-key load, mutual exclusion on claim/release cycles, racing fingerprints, read storms on a completed entry, and expired-claim takeover. 36 tests, all green, run before every release.
 
 ```bash
 dotnet test tests/IdempotencyGuard.Stress.Tests/

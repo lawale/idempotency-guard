@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
 - BenchmarkDotNet suite (`benchmarks/IdempotencyGuard.Benchmarks`) measuring per-request middleware overhead, store operation cost and fingerprint hashing cost by body size
 - `docs/stability-and-performance.md` documenting the measured overhead and the limits of what the stress suite proves
-- Weekly `stress` workflow that reruns the stress suite at ten times the load and publishes benchmark results
+- Stress suite runs in the release workflow, before packages publish. A manual `stress` workflow reruns it at ten times the load and publishes benchmark results
 
 ### Changed
 - NuGet packages now carry an icon, link to the GitHub repo instead of the author's site, and point their release notes at this changelog
