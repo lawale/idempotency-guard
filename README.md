@@ -541,11 +541,11 @@ Built-in [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/) metric
 | Metric | Type | Description |
 |--------|------|-------------|
 | `idempotency.requests.total` | Counter | Total requests with idempotency keys |
-| `idempotency.replays.total` | Counter | Requests served from cache |
+| `idempotency.replays.total` | Counter | Stored responses replayed to a client |
 | `idempotency.claims.total` | Counter | New claims created |
-| `idempotency.claims.released` | Counter | Claims released due to failure |
+| `idempotency.claims.released` | Counter | Claims released without storing a response. The `reason` tag is `failure`, `response_too_large` or `should_store_response` |
 | `idempotency.claims.lost` | Counter | Responses not stored because the handler outlived `ClaimTtl` and the claim was taken over |
-| `idempotency.conflicts.total` | Counter | 409 responses (concurrent in-progress) |
+| `idempotency.conflicts.total` | Counter | 409 responses for a key in progress, including waiters that timed out |
 | `idempotency.fingerprint_mismatches.total` | Counter | 422 responses (payload mismatch) |
 | `idempotency.store.latency` | Histogram | Store operation latency (ms) |
 | `idempotency.purge.total` | Counter | Expired entries purged by cleanup |

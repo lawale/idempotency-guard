@@ -14,7 +14,7 @@ public static class IdempotencyMetrics
 
     public static readonly Counter<long> ReplaysTotal = Meter.CreateCounter<long>(
         "idempotency.replays.total",
-        description: "Requests served from cache");
+        description: "Stored responses replayed to a client");
 
     public static readonly Counter<long> ClaimsTotal = Meter.CreateCounter<long>(
         "idempotency.claims.total",
@@ -22,7 +22,7 @@ public static class IdempotencyMetrics
 
     public static readonly Counter<long> ClaimsReleased = Meter.CreateCounter<long>(
         "idempotency.claims.released",
-        description: "Claims released due to failure");
+        description: "Claims released without storing a response, tagged with a reason: failure, response_too_large or should_store_response");
 
     public static readonly Counter<long> ClaimsLost = Meter.CreateCounter<long>(
         "idempotency.claims.lost",
@@ -30,7 +30,7 @@ public static class IdempotencyMetrics
 
     public static readonly Counter<long> ConflictsTotal = Meter.CreateCounter<long>(
         "idempotency.conflicts.total",
-        description: "409 responses for concurrent in-progress requests");
+        description: "409 responses for requests that found the key in progress, including waiters that timed out");
 
     public static readonly Counter<long> FingerprintMismatchesTotal = Meter.CreateCounter<long>(
         "idempotency.fingerprint_mismatches.total",

@@ -13,6 +13,11 @@ public class IdempotencyMiddleware
     // item to detect endpoints that have authorization metadata but were never authorized.
     private const string AuthorizationInvokedItemKey = "__AuthorizationMiddlewareWithEndpointInvoked";
 
+    private const string ClaimedResult = "claimed";
+    private const string ReplayedResult = "replayed";
+    private const string ConflictResult = "conflict";
+    private const string FingerprintMismatchResult = "fingerprint_mismatch";
+
     private readonly RequestDelegate _next;
     private readonly IIdempotencyStore _store;
     private readonly IDownstreamKeyGenerator _keyGenerator;
@@ -157,25 +162,21 @@ public class IdempotencyMiddleware
         switch (claimResult)
         {
             case ClaimResult.Claimed claimed:
-                resultTag = "claimed";
+                resultTag = ClaimedResult;
                 IdempotencyMetrics.ClaimsTotal.Add(1);
                 await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
                 break;
 
             case ClaimResult.Completed:
-                resultTag = "replayed";
-                IdempotencyMetrics.ReplaysTotal.Add(1);
-                await ReplayResponseAsync(httpContext, request, requestAborted);
+                resultTag = await ReplayResponseAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.AlreadyClaimed:
-                resultTag = "conflict";
-                IdempotencyMetrics.ConflictsTotal.Add(1);
-                await HandleConcurrentRequestAsync(httpContext, request, requestAborted);
+                resultTag = await HandleConcurrentRequestAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
-                resultTag = "fingerprint_mismatch";
+                resultTag = FingerprintMismatchResult;
                 await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
                 break;
 
@@ -310,7 +311,7 @@ public class IdempotencyMiddleware
                 || responseBuffer.Count > _options.MaxResponseBodySize)
             {
                 claimSettled = true;
-                await ReleaseClaimAsync(request, claimToken);
+                await ReleaseClaimAsync(request, claimToken, "response_too_large");
                 _logger.LogWarning(
                     "Response body for key {KeyHash} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
                     request.KeyHash, _options.MaxResponseBodySize);
@@ -318,7 +319,7 @@ public class IdempotencyMiddleware
             else if (request.ShouldStoreResponse?.Invoke(statusCode) == false)
             {
                 claimSettled = true;
-                await ReleaseClaimAsync(request, claimToken);
+                await ReleaseClaimAsync(request, claimToken, "should_store_response");
                 _logger.LogInformation(
                     "Response with status {StatusCode} for key {KeyHash} not stored, claim released",
                     statusCode, request.KeyHash);
@@ -380,7 +381,7 @@ public class IdempotencyMiddleware
         {
             if (!claimSettled)
             {
-                await ReleaseClaimAsync(request, claimToken);
+                await ReleaseClaimAsync(request, claimToken, "failure");
                 _logger.LogWarning(ex, "Idempotency claim released after failure for key {KeyHash}", request.KeyHash);
             }
 
@@ -392,15 +393,20 @@ public class IdempotencyMiddleware
         }
     }
 
-    private async Task ReleaseClaimAsync(GuardedRequest request, string claimToken)
+    private async Task ReleaseClaimAsync(GuardedRequest request, string claimToken, string reason)
     {
+        bool released;
         var releaseTs = Stopwatch.GetTimestamp();
         using (IdempotencyActivitySource.StartStoreActivity("release", request.KeyHash))
         {
-            await _store.ReleaseClaimAsync(request.StoreKey, claimToken, CancellationToken.None);
+            released = await _store.ReleaseClaimAsync(request.StoreKey, claimToken, CancellationToken.None);
         }
         RecordStoreLatency(releaseTs, "release");
-        IdempotencyMetrics.ClaimsReleased.Add(1);
+
+        if (released)
+        {
+            IdempotencyMetrics.ClaimsReleased.Add(1, new KeyValuePair<string, object?>("reason", reason));
+        }
     }
 
     private async Task<IdempotentResponse?> GetResponseAsync(GuardedRequest request, CancellationToken requestAborted)
@@ -415,7 +421,7 @@ public class IdempotencyMiddleware
         return response;
     }
 
-    private async Task ReplayResponseAsync(
+    private async Task<string> ReplayResponseAsync(
         HttpContext httpContext,
         GuardedRequest request,
         CancellationToken requestAborted)
@@ -424,26 +430,31 @@ public class IdempotencyMiddleware
 
         if (response is null)
         {
+            IdempotencyMetrics.ConflictsTotal.Add(1);
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request is being processed", request.RawKey);
-            return;
+            return ConflictResult;
         }
 
+        IdempotencyMetrics.ReplaysTotal.Add(1);
         _logger.LogInformation("Replaying idempotent response for key {KeyHash}, original status {StatusCode}", request.KeyHash, response.StatusCode);
 
         await _responseWriter.ReplayAsync(httpContext, response);
+        return ReplayedResult;
     }
 
-    private async Task HandleConcurrentRequestAsync(
+    /// <returns>How the request ended, for the span's <c>idempotency.result</c> tag.</returns>
+    private async Task<string> HandleConcurrentRequestAsync(
         HttpContext httpContext,
         GuardedRequest request,
         CancellationToken requestAborted)
     {
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
+            IdempotencyMetrics.ConflictsTotal.Add(1);
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
                 "Request with this idempotency key is currently being processed", request.RawKey);
-            return;
+            return ConflictResult;
         }
 
         var deadline = DateTime.UtcNow.Add(_options.ConcurrentRequestTimeout);
@@ -457,7 +468,7 @@ public class IdempotencyMiddleware
             }
             catch (OperationCanceledException) when (requestAborted.IsCancellationRequested)
             {
-                return;
+                return "cancelled";
             }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
@@ -468,7 +479,7 @@ public class IdempotencyMiddleware
                 case ClaimResult.Claimed claimed:
                     IdempotencyMetrics.ClaimsTotal.Add(1);
                     await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
-                    return;
+                    return ClaimedResult;
 
                 case ClaimResult.Completed:
                     var response = await GetResponseAsync(request, requestAborted);
@@ -478,18 +489,20 @@ public class IdempotencyMiddleware
                         _logger.LogInformation("Replaying idempotent response after wait for key {KeyHash}", request.KeyHash);
 
                         await _responseWriter.ReplayAsync(httpContext, response);
-                        return;
+                        return ReplayedResult;
                     }
                     break;
 
                 case ClaimResult.FingerprintMismatch mismatch:
                     await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
-                    return;
+                    return FingerprintMismatchResult;
             }
         }
 
+        IdempotencyMetrics.ConflictsTotal.Add(1);
         await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
             "Timed out waiting for concurrent request to complete", request.RawKey);
+        return ConflictResult;
     }
 
     private async Task WriteFingerprintMismatchAsync(

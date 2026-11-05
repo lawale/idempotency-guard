@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Logs and spans now carry the store key's digest, so a log line leads straight to its row
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope
 - **Breaking:** `FingerprintResult` no longer has a `RequestBody`, which nothing read
+- `idempotency.conflicts.total` now counts 409 responses only, rather than every request that found the key in progress. Waiters that time out now count
+- `idempotency.replays.total` no longer counts a replay that found no response and returned a 409
+- `idempotency.claims.released` has a `reason` tag (`failure`, `response_too_large`, `should_store_response`), and no longer counts a release when the claim was already gone
+- The `idempotency.result` span tag now reports how the request ended, and can be `cancelled`
 
 ### Fixed
 - `MaxFingerprintBodySize = 0` read the whole request body into memory with no limit, when it's meant to skip the body

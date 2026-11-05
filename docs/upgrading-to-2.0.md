@@ -78,6 +78,10 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 
 - Logs carry `KeyHash` instead of `Key`, and spans carry `idempotency.key_hash` instead of `idempotency.key`. The value is the digest from the store key, so it correlates requests and leads to the row, but can't be used to replay a response. Update any dashboards or log queries that use the old names.
 - New counter: `idempotency.claims.lost`. It counts responses that weren't stored because the handler outlived `ClaimTtl` and the claim was taken over. If it's above zero, raise `ClaimTtl`.
+- `idempotency.conflicts.total` now counts 409 responses only, as its description always said. It used to count every request that found the key in progress, including waiters that went on to replay or take over, so expect it to drop under the default `WaitThenReplay`. Waiters that time out now count.
+- `idempotency.replays.total` no longer counts a replay that found no response and returned a 409.
+- `idempotency.claims.released` has a `reason` tag: `failure`, `response_too_large` or `should_store_response`. It always counted all three, despite being described as failures only. It no longer counts a release when the claim was already gone.
+- The `idempotency.result` span tag now reports how the request ended, rather than `conflict` for any request that found the key in progress. A waiter whose client disconnects reports the new value `cancelled`.
 
 ### Behaviour
 
