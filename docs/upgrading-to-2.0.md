@@ -81,6 +81,7 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 - `KeyPrefix` is limited to 128 characters. A longer configured prefix fails at startup, and a longer per-request prefix fails the request.
 - Keys differing only by case are now separate on SQL Server, matching the other stores.
 - Numbers now hash as numbers in fingerprints, so `{"amount":1}` and `{"amount":"1"}` no longer match.
+- Fingerprints now include `PathBase` and the hosts an endpoint declares with `RequireHost` or `[Host]`. Reusing a key on an endpoint split that way now gets a 422 rather than the other endpoint's response. The `Host` header isn't included, so a retry whose `Host` a proxy rewrote still replays.
 - Fingerprint fields can no longer run into each other, so `POST /pay:{}` with no body no longer matches `POST /pay` with the body `{}`.
 - End `KeyPrefix` with a delimiter if it doesn't have one already. Without one, `tenant-1` with the key `2abc` and `tenant-12` with the key `abc` get the same downstream key. Adding a delimiter changes your downstream keys, so treat it like turning on key scoping.
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope.

@@ -96,7 +96,9 @@ Request arrives with Idempotency-Key header
     └── Processing fails → Release claim for retry
 ```
 
-The middleware computes a SHA256 fingerprint of the request (method + path + body) to detect when clients reuse an idempotency key with different payloads.
+The middleware computes a SHA256 fingerprint of the request (method + path, including any `PathBase` + the hosts the endpoint declares with `RequireHost` or `[Host]` + body) to detect when clients reuse an idempotency key with different payloads.
+
+The `Host` header itself isn't included, because proxies often rewrite it and a retry has to replay wherever it lands. If you tell tenants apart by hostname without declaring hosts on your endpoints, use `KeyPrefix` or `KeyScope` to keep their keys apart.
 
 ## Configuration
 
