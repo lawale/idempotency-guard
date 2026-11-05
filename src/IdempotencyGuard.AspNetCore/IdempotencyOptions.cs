@@ -102,8 +102,8 @@ public class IdempotencyOptions
     /// Development environment only, like <c>ValidateOnBuild</c>.
     /// <para>
     /// Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the
-    /// first request, so this adds about 1 ms per minimal API endpoint with typed parameters to
-    /// startup. With the check off, an unregistered policy fails each request that uses it with an
+    /// first request, so this adds startup time that grows with the number of endpoints, especially
+    /// minimal APIs with typed parameters. With the check off, an unregistered policy fails each request that uses it with an
     /// <see cref="InvalidOperationException"/> before the handler runs.
     /// </para>
     /// </summary>

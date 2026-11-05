@@ -48,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup when `ValidateEndpointsOnStartup` is on
 - `ShouldStoreResponse` decides by status code whether a response is stored, globally or per policy. By default every response is stored, including 5xx
 - `MaxKeyLength` limits the keys accepted from clients. The default is 1024, and 0 disables the check
-- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds about 1 ms per minimal API endpoint with typed parameters. It reports unknown policies, and routes left unscoped while others have a scope
+- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds startup time that grows with the number of endpoints. It reports unknown policies, and routes left unscoped while others have a scope
 - `IdempotencyStoreKey.For` computes the store key for a client's key, for debugging
 - `idempotency.responses.oversized` and `idempotency.replays.rejected` counters
 - `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim

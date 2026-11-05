@@ -46,19 +46,19 @@ Benchmarks live in `benchmarks/IdempotencyGuard.Benchmarks`, built on BenchmarkD
 dotnet run --project benchmarks/IdempotencyGuard.Benchmarks -c Release -f net10.0 -- --filter '*'
 ```
 
-Numbers below come from two machines, both on .NET 9: an Apple M2 Pro (10 cores, Arm64) and a GitHub Actions runner (AMD EPYC 7763, 4 vCPUs, x64). The suite now targets .NET 10 and hasn't been re-measured on it yet. The gap between the columns is the useful part: neither the absolute numbers nor the ratios carry over from one machine to another, so measure on your own hardware if the margin matters.
+Numbers below come from one [`stress` workflow run](https://github.com/lawale/idempotency-guard/actions/runs/42122204407) on commit `a16bccb`: .NET 10.0.14 on a GitHub Actions runner (AMD EPYC 7763, 4 vCPUs, x64). They're published from CI so you can rerun that workflow and check them. Shared runners vary from run to run, and neither the absolute numbers nor the ratios carry over to other hardware, so measure on your own if the margin matters.
 
 ### Per request, end to end
 
 An ASP.NET Core `TestServer` POST to a trivial handler, with and without the guard, using the in-memory store:
 
-| Path | M2 Pro | vs baseline | CI runner | vs baseline | Allocated |
-|---|---:|---:|---:|---:|---:|
-| No guard | 8.47 µs | 1.00x | 15.6 µs | 1.00x | 9.4 KB |
-| Guard, new key (claim + store response) | 22.58 µs | 2.67x | 66.2 µs | 4.24x | 27 KB |
-| Guard, replayed response | 16.09 µs | 1.90x | 56.4 µs | 3.62x | 25.4 KB |
+| Path | Mean | vs baseline | Allocated |
+|---|---:|---:|---:|
+| No guard | 13.78 µs | 1.00x | 9.09 KB |
+| Guard, new key (claim + store response) | 62.89 µs | 4.57x | 26.77 KB |
+| Guard, replayed response | 51.96 µs | 3.77x | 25.3 KB |
 
-So roughly 14 µs of added work on a first request and 7.6 µs on a replay on the M2 Pro, and about 50 µs and 41 µs on the runner, with a 57-byte JSON body.
+So roughly 49 µs of added work on a first request and 38 µs on a replay, with a 57-byte JSON body.
 
 The multiples look alarming and aren't. `TestServer` skips the kernel, the socket, TLS and the network, so the baseline here is about as cheap as an HTTP request can possibly get. Against a real handler that talks to a database or a payment provider, the same tens of microseconds disappear into the noise. It does not disappear against a 200 µs in-memory endpoint, which is why the absolute number matters more than the multiple.
 
@@ -68,19 +68,19 @@ In-memory store, isolated from the pipeline:
 
 | Operation | Mean | Allocated |
 |---|---:|---:|
-| `TryClaim` (already completed) | 45 ns | 288 B |
-| `GetResponse` (replay) | 86 ns | 440 B |
-| `TryClaim` (new key) | 588 ns | 448 B |
-| `TryClaim` + `SetResponse` | 1.08 µs | 760 B |
+| `TryClaim` (already completed) | 61 ns | 168 B |
+| `GetResponse` (replay) | 135 ns | 440 B |
+| `TryClaim` (new key) | 1.70 µs | 552 B |
+| `TryClaim` + `SetResponse` | 2.37 µs | 925 B |
 
-Redis, Postgres and SQL Server add a round trip on top. Single-claim latency from a stress run at scale 10 on the CI runner, with each store in a container on the same machine:
+Redis, Postgres and SQL Server add a round trip on top. Single-claim latency from the same run, at stress scale 10, with each store in a container on the same machine:
 
 | Store | Mixed load p50 | p99 | 1,280 callers on one key p50 | p99 |
 |---|---:|---:|---:|---:|
 | In-memory | < 0.01 ms | < 0.01 ms | < 0.01 ms | < 0.01 ms |
-| Redis 7 | 0.75 ms | 4.9 ms | 17.5 ms | 34 ms |
-| PostgreSQL 16 | 3.5 ms | 11.9 ms | 311 ms | 635 ms |
-| SQL Server 2022 | 3.0 ms | 7.7 ms | 1,285 ms | 2,028 ms |
+| Redis 7 | 0.97 ms | 4.5 ms | 17.5 ms | 29 ms |
+| PostgreSQL 16 | 4.3 ms | 13.5 ms | 454 ms | 765 ms |
+| SQL Server 2022 | 3.1 ms | 7.9 ms | 645 ms | 1,016 ms |
 
 Mixed load is 10,000 claims across 2,500 keys from 16 workers. The right-hand columns are the worst case on purpose: 1,280 callers released at the same instant against one key, on 4 vCPUs shared with the database and the test itself, so most of that time is queueing. Container-local stores also skip real network latency, so add your own RTT.
 
@@ -88,17 +88,17 @@ Mixed load is 10,000 claims across 2,500 keys from 16 workers. The right-hand co
 
 Fingerprint hashing is the one place where cost scales with your payload, and it scales worse than you'd expect:
 
-| Body size | `RequestFingerprint.Compute`, M2 Pro | CI runner | Allocated |
-|---|---:|---:|---:|
-| 256 B | 5.03 µs | 10.3 µs | 7.7 KB |
-| 4 KB | 74.6 µs | 127 µs | 106 KB |
-| 64 KB | 1.25 ms | 2.07 ms | 1.63 MB |
+| Body size | `RequestFingerprint.Compute` | Allocated |
+|---|---:|---:|
+| 256 B | 7.39 µs | 5.56 KB |
+| 4 KB | 83.4 µs | 75.31 KB |
+| 64 KB | 1.38 ms | 1.16 MB |
 
 SHA-256 isn't the problem. The JSON normalisation is: the body gets parsed into a `JsonDocument`, rebuilt as a sorted object graph and re-serialised so that `{"a":1,"b":2}` and `{"b":2,"a":1}` hash the same. That's the right semantics and it's expensive.
 
 If your endpoints take large bodies, use one of the knobs:
 
-- `[Idempotent(FingerprintProperties = ["Amount", "Currency"])]` narrows the hash to the fields that decide whether two requests are the same. Extraction from a 64 KB body takes 225 µs, and the hash then runs over the handful of extracted bytes instead of all 64 KB: about 230 µs total against 1.25 ms, and roughly 1.6 KB of managed allocation against 1.63 MB.
+- `[Idempotent(FingerprintProperties = ["Amount", "Currency"])]` narrows the hash to the fields that decide whether two requests are the same. Extraction from a 64 KB body takes 248 µs, and the hash then runs over the handful of extracted bytes instead of all 64 KB: about 255 µs total against 1.38 ms, and roughly 1.2 KB of managed allocation against 1.16 MB.
 - `options.MaxFingerprintBodySize` caps how many bytes are read. Setting it to 0 skips body hashing entirely, at the cost of no longer detecting a changed payload.
 
 For payloads of a few hundred bytes to a couple of KB, the default is fine.
@@ -107,7 +107,7 @@ For payloads of a few hundred bytes to a couple of KB, the default is fine.
 
 Stress tests show that the concurrency guarantees hold on one machine against a single store node. They say nothing about Redis failover mid-claim, Postgres primary promotion, or a partition between your app and the store. `RedisConnectionResilienceTests` in the integration suite covers reconnection, and that's the extent of it.
 
-Throughput ceilings are the store's, not the library's. Redis will do tens of thousands of claims per second and Postgres rather fewer; the guard adds microseconds to whatever your store gives you.
+Throughput ceilings are the store's, not the library's, and these tests don't measure them. The guard adds microseconds to whatever your store gives you.
 
 ## Targets
 

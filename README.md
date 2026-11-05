@@ -362,7 +362,7 @@ When it returns `false`, the claim is released and the client still gets the ori
 options.ValidateEndpointsOnStartup = true; // Also check outside Development
 ```
 
-It's off by default in production because of the cost. Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the first request regardless, so this is added time rather than moved time: about 1 ms per minimal API endpoint with typed parameters, or a second or so at 1,000 endpoints.
+It's off by default in production because of the cost. Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the first request regardless, so this is added startup time rather than moved time, and it grows with the number of endpoints, especially minimal APIs with typed parameters.
 
 With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
 
@@ -612,15 +612,15 @@ dotnet test tests/IdempotencyGuard.Stress.Tests/
 IDEMPOTENCY_STRESS_SCALE=10 dotnet test tests/IdempotencyGuard.Stress.Tests/
 ```
 
-Measured overhead on .NET 9 with the in-memory store, via BenchmarkDotNet:
+Measured overhead with the in-memory store, via BenchmarkDotNet on .NET 10 and a GitHub Actions runner (4 vCPU):
 
-| Path | M2 Pro | GitHub Actions runner (4 vCPU) | Allocated |
-|---|---:|---:|---:|
-| Handler with no guard | 8.5 µs | 15.6 µs | 9.4 KB |
-| Guard, new key | 22.6 µs | 66.2 µs | 27 KB |
-| Guard, replayed response | 16.1 µs | 56.4 µs | 25.4 KB |
+| Path | Mean | Allocated |
+|---|---:|---:|
+| Handler with no guard | 13.8 µs | 9.09 KB |
+| Guard, new key | 62.9 µs | 26.77 KB |
+| Guard, replayed response | 52.0 µs | 25.3 KB |
 
-Around 14–50 µs per first request and 8–41 µs per replay depending on the machine, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs 1.25–2.07 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
+Around 49 µs per first request and 38 µs per replay on that runner, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs about 1.4 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
 
 Full numbers, methodology and limitations: [docs/stability-and-performance.md](docs/stability-and-performance.md).
 
