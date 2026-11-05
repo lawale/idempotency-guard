@@ -98,7 +98,9 @@ Request arrives with Idempotency-Key header
 
 The middleware computes a SHA256 fingerprint of the request (method + path, including any `PathBase` + the hosts the endpoint declares with `RequireHost` or `[Host]` + body) to detect when clients reuse an idempotency key with different payloads.
 
-The `Host` header itself isn't included, because proxies often rewrite it and a retry has to replay wherever it lands. If you tell tenants apart by hostname without declaring hosts on your endpoints, use `KeyPrefix` or `KeyScope` to keep their keys apart.
+The `Host` header itself isn't included, because proxies often rewrite it and a retry has to replay wherever it lands. If you tell tenants apart by hostname without declaring hosts on your endpoints, or branch on the host with `MapWhen`, use `KeyPrefix` or `KeyScope` to keep their keys apart.
+
+Declared hosts come from the matched endpoint, so they're only included if routing has run before the guard. A custom `IFingerprintBuilder` replaces all of this: include whatever separates your endpoints in the fingerprint it returns, or a key reused on another endpoint can replay that endpoint's response.
 
 ## Configuration
 
@@ -509,6 +511,8 @@ app.MapPost("/payments", async (
     return Results.Created($"/payments/{result.Id}", result);
 });
 ```
+
+Keep `:` out of your provider and operation names. The key, provider and operation are joined with `:` before hashing, so key `k:stripe` with `("charge", "x")` produces the same downstream key as key `k` with `("stripe", "charge:x")`. A client chooses the key, so a name containing `:` could let one operation's key match another's.
 
 ## Edge Cases Handled
 
