@@ -24,6 +24,10 @@ public static class IdempotencyMetrics
         "idempotency.claims.released",
         description: "Claims released due to failure");
 
+    public static readonly Counter<long> ClaimsLost = Meter.CreateCounter<long>(
+        "idempotency.claims.lost",
+        description: "Responses not stored because the claim expired and was taken over before the handler finished");
+
     public static readonly Counter<long> ConflictsTotal = Meter.CreateCounter<long>(
         "idempotency.conflicts.total",
         description: "409 responses for concurrent in-progress requests");

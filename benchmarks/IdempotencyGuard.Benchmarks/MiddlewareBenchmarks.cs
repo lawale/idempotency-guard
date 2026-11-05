@@ -148,11 +148,11 @@ public class MiddlewareBenchmarks
             return Volatile.Read(ref _inner).TryClaimAsync(key, requestFingerprint, claimTtl, ct);
         }
 
-        public Task SetResponseAsync(string key, IdempotentResponse response, TimeSpan responseTtl, CancellationToken ct = default) =>
-            Volatile.Read(ref _inner).SetResponseAsync(key, response, responseTtl, ct);
+        public Task<bool> SetResponseAsync(string key, string claimToken, IdempotentResponse response, TimeSpan responseTtl, CancellationToken ct = default) =>
+            Volatile.Read(ref _inner).SetResponseAsync(key, claimToken, response, responseTtl, ct);
 
-        public Task ReleaseClaimAsync(string key, CancellationToken ct = default) =>
-            Volatile.Read(ref _inner).ReleaseClaimAsync(key, ct);
+        public Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default) =>
+            Volatile.Read(ref _inner).ReleaseClaimAsync(key, claimToken, ct);
 
         public Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default) =>
             Volatile.Read(ref _inner).GetResponseAsync(key, ct);

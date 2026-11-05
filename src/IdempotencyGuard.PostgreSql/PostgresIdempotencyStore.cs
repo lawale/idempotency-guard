@@ -9,7 +9,8 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 {
     private readonly string _connectionString;
     private readonly PostgresIdempotencyOptions _options;
-    private bool _tableCreated;
+    private readonly SemaphoreSlim _tableCreationLock = new(1, 1);
+    private volatile bool _tableCreated;
 
     public PostgresIdempotencyStore(IOptions<PostgresIdempotencyOptions> options)
     {
@@ -34,12 +35,13 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 
         var now = DateTime.UtcNow;
         var expiresAt = now.Add(claimTtl);
+        var claimToken = Guid.NewGuid().ToString("N");
 
         // Try to insert. If key exists, do nothing and return existing.
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $@"
-            INSERT INTO {FullTableName} (key, fingerprint, state, claimed_at, expires_at)
-            VALUES (@key, @fingerprint, 'claimed', @now, @expires)
+            INSERT INTO {FullTableName} (key, fingerprint, state, claimed_at, expires_at, claim_token)
+            VALUES (@key, @fingerprint, 'claimed', @now, @expires, @claim_token)
             ON CONFLICT (key) DO UPDATE
                 SET key = {FullTableName}.key  -- no-op update to return row
             RETURNING key, fingerprint, state, claimed_at, completed_at, expires_at,
@@ -50,19 +52,20 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         cmd.Parameters.AddWithValue("fingerprint", requestFingerprint);
         cmd.Parameters.AddWithValue("now", now);
         cmd.Parameters.AddWithValue("expires", expiresAt);
+        cmd.Parameters.AddWithValue("claim_token", claimToken);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         if (!await reader.ReadAsync(ct))
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         var isInserted = reader.GetBoolean(reader.GetOrdinal("is_inserted"));
 
         if (isInserted)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         var existingFingerprint = reader.GetString(reader.GetOrdinal("fingerprint"));
@@ -73,7 +76,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         if (existingExpiresAt < now)
         {
             await reader.CloseAsync();
-            return await ReclaimExpiredAsync(conn, key, requestFingerprint, state, claimTtl, ct);
+            return await ReclaimExpiredAsync(conn, key, requestFingerprint, state, claimToken, claimTtl, ct);
         }
 
         if (existingFingerprint != requestFingerprint)
@@ -91,8 +94,9 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         return new ClaimResult.AlreadyClaimed(claimedEntry);
     }
 
-    public async Task SetResponseAsync(
+    public async Task<bool> SetResponseAsync(
         string key,
+        string claimToken,
         IdempotentResponse response,
         TimeSpan responseTtl,
         CancellationToken ct = default)
@@ -108,29 +112,32 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
                 expires_at = @expires_at,
                 status_code = @status_code,
                 headers_json = @headers,
-                response_body = @body
-            WHERE key = @key";
+                response_body = @body,
+                claim_token = NULL
+            WHERE key = @key AND state = 'claimed' AND claim_token = @claim_token";
 
         cmd.Parameters.AddWithValue("key", key);
+        cmd.Parameters.AddWithValue("claim_token", claimToken);
         cmd.Parameters.AddWithValue("completed_at", DateTime.UtcNow);
         cmd.Parameters.AddWithValue("expires_at", DateTime.UtcNow.Add(responseTtl));
         cmd.Parameters.AddWithValue("status_code", response.StatusCode);
         cmd.Parameters.AddWithValue("headers", JsonSerializer.Serialize(response.Headers));
         cmd.Parameters.AddWithValue("body", GetBodyBytes(response.Body));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
-    public async Task ReleaseClaimAsync(string key, CancellationToken ct = default)
+    public async Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default)
     {
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"DELETE FROM {FullTableName} WHERE key = @key AND state = 'claimed'";
+        cmd.CommandText = $"DELETE FROM {FullTableName} WHERE key = @key AND state = 'claimed' AND claim_token = @claim_token";
         cmd.Parameters.AddWithValue("key", key);
+        cmd.Parameters.AddWithValue("claim_token", claimToken);
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
     public async Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)
@@ -169,7 +176,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
     }
 
     private async Task<ClaimResult> ReclaimExpiredAsync(
-        NpgsqlConnection conn, string key, string fingerprint, string previousState, TimeSpan claimTtl, CancellationToken ct)
+        NpgsqlConnection conn, string key, string fingerprint, string previousState, string claimToken, TimeSpan claimTtl, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
 
@@ -179,12 +186,14 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             SET fingerprint = @fingerprint, state = 'claimed',
                 claimed_at = @now, expires_at = @expires,
                 completed_at = NULL, status_code = NULL,
-                headers_json = NULL, response_body = NULL
+                headers_json = NULL, response_body = NULL,
+                claim_token = @claim_token
             WHERE key = @key AND state = @previous_state AND expires_at < @now";
 
         cmd.Parameters.AddWithValue("key", key);
         cmd.Parameters.AddWithValue("fingerprint", fingerprint);
         cmd.Parameters.AddWithValue("previous_state", previousState);
+        cmd.Parameters.AddWithValue("claim_token", claimToken);
         cmd.Parameters.AddWithValue("now", now);
         cmd.Parameters.AddWithValue("expires", now.Add(claimTtl));
 
@@ -192,7 +201,7 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
 
         if (rows > 0)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         // Someone else reclaimed it between our read and update — re-read to check fingerprint
@@ -227,18 +236,19 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
         // Key was deleted between our update attempt and re-read — insert a fresh claim
         await using var insertCmd = conn.CreateCommand();
         insertCmd.CommandText = $@"
-            INSERT INTO {FullTableName} (key, fingerprint, state, claimed_at, expires_at)
-            VALUES (@key, @fingerprint, 'claimed', @now, @expires)
+            INSERT INTO {FullTableName} (key, fingerprint, state, claimed_at, expires_at, claim_token)
+            VALUES (@key, @fingerprint, 'claimed', @now, @expires, @claim_token)
             ON CONFLICT (key) DO NOTHING";
         insertCmd.Parameters.AddWithValue("key", key);
         insertCmd.Parameters.AddWithValue("fingerprint", fingerprint);
         insertCmd.Parameters.AddWithValue("now", now);
         insertCmd.Parameters.AddWithValue("expires", now.Add(claimTtl));
+        insertCmd.Parameters.AddWithValue("claim_token", claimToken);
 
         var inserted = await insertCmd.ExecuteNonQueryAsync(ct);
         if (inserted > 0)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         // Another request beat us to the insert — re-read to check fingerprint
@@ -309,28 +319,47 @@ public class PostgresIdempotencyStore : IIdempotencyStore, IPurgableIdempotencyS
             return;
         }
 
-        await using var conn = new NpgsqlConnection(_connectionString);
-        await conn.OpenAsync(ct);
+        await _tableCreationLock.WaitAsync(ct);
+        try
+        {
+            if (_tableCreated)
+            {
+                return;
+            }
 
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $@"
-            CREATE TABLE IF NOT EXISTS {FullTableName} (
-                key          TEXT PRIMARY KEY,
-                fingerprint  TEXT NOT NULL,
-                state        TEXT NOT NULL DEFAULT 'claimed',
-                claimed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                completed_at TIMESTAMPTZ,
-                expires_at   TIMESTAMPTZ NOT NULL,
-                status_code  INT,
-                headers_json TEXT,
-                response_body BYTEA
-            );
+            await using var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync(ct);
 
-            CREATE INDEX IF NOT EXISTS ""idx_{_options.TableName}_expires""
-                ON {FullTableName} (expires_at);";
+            // ALTER comes before CREATE INDEX on purpose: instances starting together then
+            // queue for the exclusive lock, rather than each holding the index's share lock
+            // while waiting to upgrade it, which would deadlock.
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $@"
+                CREATE TABLE IF NOT EXISTS {FullTableName} (
+                    key          TEXT PRIMARY KEY,
+                    fingerprint  TEXT NOT NULL,
+                    state        TEXT NOT NULL DEFAULT 'claimed',
+                    claimed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    expires_at   TIMESTAMPTZ NOT NULL,
+                    status_code  INT,
+                    headers_json TEXT,
+                    response_body BYTEA,
+                    claim_token  TEXT
+                );
 
-        await cmd.ExecuteNonQueryAsync(ct);
-        _tableCreated = true;
+                ALTER TABLE {FullTableName} ADD COLUMN IF NOT EXISTS claim_token TEXT;
+
+                CREATE INDEX IF NOT EXISTS ""idx_{_options.TableName}_expires""
+                    ON {FullTableName} (expires_at);";
+
+            await cmd.ExecuteNonQueryAsync(ct);
+            _tableCreated = true;
+        }
+        finally
+        {
+            _tableCreationLock.Release();
+        }
     }
 
     private static IdempotencyEntry ReadEntry(NpgsqlDataReader reader, string key)

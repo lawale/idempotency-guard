@@ -20,9 +20,9 @@ public class IdempotencyStoreHealthCheck : IHealthCheck
             var testKey = $"__healthcheck_{Guid.NewGuid():N}";
             var result = await _store.TryClaimAsync(testKey, "healthcheck", TimeSpan.FromSeconds(5), cancellationToken);
 
-            if (result is ClaimResult.Claimed)
+            if (result is ClaimResult.Claimed claimed)
             {
-                await _store.ReleaseClaimAsync(testKey, cancellationToken);
+                await _store.ReleaseClaimAsync(testKey, claimed.ClaimToken, cancellationToken);
                 return HealthCheckResult.Healthy("Idempotency store is accessible");
             }
 

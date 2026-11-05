@@ -22,19 +22,20 @@ public class RedisConnectionResilienceTests
             var key = UniqueKey();
 
             var claimResult = await store.TryClaimAsync(key, "fp-1", TimeSpan.FromMinutes(1));
-            claimResult.Should().BeOfType<ClaimResult.Claimed>();
+            var claimToken = claimResult.Should().BeOfType<ClaimResult.Claimed>().Subject.ClaimToken;
 
             var response = CreateResponse(201, """{"ok":true}""");
-            await store.SetResponseAsync(key, response, TimeSpan.FromMinutes(5));
+            (await store.SetResponseAsync(key, claimToken, response, TimeSpan.FromMinutes(5))).Should().BeTrue();
 
             var storedResponse = await store.GetResponseAsync(key);
             storedResponse.Should().NotBeNull();
             storedResponse!.StatusCode.Should().Be(201);
 
-            await store.ReleaseClaimAsync(key);
+            // A completed entry has no claim left to release, so its response must survive.
+            (await store.ReleaseClaimAsync(key, claimToken)).Should().BeFalse();
 
             var afterRelease = await store.GetResponseAsync(key);
-            afterRelease.Should().BeNull();
+            afterRelease.Should().NotBeNull();
         }
         finally
         {

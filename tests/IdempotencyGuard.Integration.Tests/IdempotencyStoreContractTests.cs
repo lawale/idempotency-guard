@@ -48,8 +48,8 @@ public abstract class IdempotencyStoreContractTests
     public async Task TryClaim_completed_key_returns_completed()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
-        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), DefaultResponseTtl);
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), DefaultResponseTtl);
 
         var result = await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
 
@@ -73,8 +73,8 @@ public abstract class IdempotencyStoreContractTests
     public async Task TryClaim_completed_key_different_fingerprint_returns_mismatch()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
-        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), DefaultResponseTtl);
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), DefaultResponseTtl);
 
         var result = await Store.TryClaimAsync(key, "fp-2", DefaultClaimTtl);
 
@@ -87,10 +87,10 @@ public abstract class IdempotencyStoreContractTests
     public async Task SetResponse_then_get_response_round_trips_correctly()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
 
         var original = CreateResponse(201, """{"id":"pay_123"}""");
-        await Store.SetResponseAsync(key, original, DefaultResponseTtl);
+        await Store.SetResponseAsync(key, claimToken, original, DefaultResponseTtl);
 
         var retrieved = await Store.GetResponseAsync(key);
 
@@ -124,8 +124,8 @@ public abstract class IdempotencyStoreContractTests
     public async Task ReleaseClaim_allows_new_claim()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
-        await Store.ReleaseClaimAsync(key);
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.ReleaseClaimAsync(key, claimToken);
 
         var result = await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
 
@@ -150,8 +150,8 @@ public abstract class IdempotencyStoreContractTests
     public async Task TryClaim_expired_completed_entry_allows_new_claim()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
-        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
 
         await Task.Delay(300);
 
@@ -164,14 +164,72 @@ public abstract class IdempotencyStoreContractTests
     public async Task TryClaim_expired_completed_entry_with_different_fingerprint_allows_new_claim()
     {
         var key = UniqueKey();
-        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
-        await Store.SetResponseAsync(key, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), TimeSpan.FromMilliseconds(100));
 
         await Task.Delay(300);
 
         var result = await Store.TryClaimAsync(key, "fp-2", DefaultClaimTtl);
 
         result.Should().BeOfType<ClaimResult.Claimed>();
+    }
+
+    [Fact]
+    public async Task SetResponse_with_stale_token_returns_false_and_leaves_the_new_claim_in_place()
+    {
+        var key = UniqueKey();
+        var staleToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", TimeSpan.FromMilliseconds(100))).ClaimToken;
+        await Task.Delay(300);
+        var currentToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-2", DefaultClaimTtl)).ClaimToken;
+
+        var stored = await Store.SetResponseAsync(key, staleToken, CreateResponse(200, "stale"), DefaultResponseTtl);
+
+        stored.Should().BeFalse();
+        (await Store.GetResponseAsync(key)).Should().BeNull();
+
+        (await Store.SetResponseAsync(key, currentToken, CreateResponse(200, "current"), DefaultResponseTtl)).Should().BeTrue();
+        var response = await Store.GetResponseAsync(key);
+        Encoding.UTF8.GetString(response!.Body.Span).Should().Be("current");
+    }
+
+    [Fact]
+    public async Task ReleaseClaim_with_stale_token_returns_false_and_leaves_the_new_claim_in_place()
+    {
+        var key = UniqueKey();
+        var staleToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", TimeSpan.FromMilliseconds(100))).ClaimToken;
+        await Task.Delay(300);
+        await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl);
+
+        var released = await Store.ReleaseClaimAsync(key, staleToken);
+
+        released.Should().BeFalse();
+        (await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).Should().BeOfType<ClaimResult.AlreadyClaimed>();
+    }
+
+    [Fact]
+    public async Task ReleaseClaim_does_not_remove_a_completed_entry()
+    {
+        var key = UniqueKey();
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), DefaultResponseTtl);
+
+        var released = await Store.ReleaseClaimAsync(key, claimToken);
+
+        released.Should().BeFalse();
+        (await Store.GetResponseAsync(key)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task SetResponse_after_the_claim_was_released_returns_false()
+    {
+        var key = UniqueKey();
+        var claimToken = ((ClaimResult.Claimed)await Store.TryClaimAsync(key, "fp-1", DefaultClaimTtl)).ClaimToken;
+        await Store.ReleaseClaimAsync(key, claimToken);
+
+        var stored = await Store.SetResponseAsync(key, claimToken, CreateResponse(200, "ok"), DefaultResponseTtl);
+
+        stored.Should().BeFalse();
+        (await Store.GetResponseAsync(key)).Should().BeNull();
     }
 
     protected static IdempotentResponse CreateResponse(int statusCode, string body) =>

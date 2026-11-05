@@ -24,8 +24,8 @@ public class PostgresStoreStressTests : IdempotencyStoreStressTests, IClassFixtu
     // concurrent claims is a test-setup artefact, not the behaviour under test.
     public async Task InitializeAsync()
     {
-        await _store.TryClaimAsync("stress-warmup", "warmup", TimeSpan.FromSeconds(1));
-        await _store.ReleaseClaimAsync("stress-warmup");
+        var claimToken = ((ClaimResult.Claimed)await _store.TryClaimAsync("stress-warmup", "warmup", TimeSpan.FromSeconds(1))).ClaimToken;
+        await _store.ReleaseClaimAsync("stress-warmup", claimToken);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

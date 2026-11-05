@@ -104,52 +104,38 @@ public class IdempotencyMiddleware
 
         var result = await _fingerprintBuilder.ComputeAsync(httpContext, idempotentAttr);
 
-        ClaimResult claimResult;
-        var claimTs = Stopwatch.GetTimestamp();
-        using (var claimActivity = IdempotencyActivitySource.StartStoreActivity("claim", idempotencyKey))
-        {
-            claimResult = await _store.TryClaimAsync(idempotencyKey, result.Fingerprint, claimTtl, requestAborted);
-            claimActivity?.SetTag("idempotency.claim.result", claimResult switch
-            {
-                ClaimResult.Claimed => "claimed",
-                ClaimResult.Completed => "completed",
-                ClaimResult.AlreadyClaimed => "already_claimed",
-                ClaimResult.FingerprintMismatch => "fingerprint_mismatch",
-                _ => "unknown"
-            });
-        }
-        RecordStoreLatency(claimTs, "claim");
+        var request = new GuardedRequest(
+            idempotencyKey,
+            result.Fingerprint,
+            claimTtl,
+            responseTtl);
+
+        var claimResult = await TryClaimAsync(request, requestAborted);
 
         string resultTag;
         switch (claimResult)
         {
-            case ClaimResult.Claimed:
+            case ClaimResult.Claimed claimed:
                 resultTag = "claimed";
                 IdempotencyMetrics.ClaimsTotal.Add(1);
-                await HandleNewRequestAsync(httpContext, idempotencyKey, result.Fingerprint, responseTtl, requestAborted);
+                await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
                 break;
 
             case ClaimResult.Completed:
                 resultTag = "replayed";
                 IdempotencyMetrics.ReplaysTotal.Add(1);
-                await ReplayResponseAsync(httpContext, idempotencyKey, requestAborted);
+                await ReplayResponseAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.AlreadyClaimed:
                 resultTag = "conflict";
                 IdempotencyMetrics.ConflictsTotal.Add(1);
-                await HandleConcurrentRequestAsync(httpContext, idempotencyKey, requestAborted);
+                await HandleConcurrentRequestAsync(httpContext, request, requestAborted);
                 break;
 
             case ClaimResult.FingerprintMismatch mismatch:
                 resultTag = "fingerprint_mismatch";
-                IdempotencyMetrics.FingerprintMismatchesTotal.Add(1);
-                _logger.LogWarning(
-                    "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
-                    idempotencyKey, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
-                await _responseWriter.WriteErrorAsync(httpContext, 422, IdempotencyErrorKind.FingerprintMismatch,
-                    "Idempotency key has already been used with a different request payload",
-                    idempotencyKey);
+                await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
                 break;
 
             default:
@@ -162,20 +148,39 @@ public class IdempotencyMiddleware
 
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
 
+    private async Task<ClaimResult> TryClaimAsync(GuardedRequest request, CancellationToken requestAborted)
+    {
+        ClaimResult claimResult;
+        var claimTs = Stopwatch.GetTimestamp();
+        using (var claimActivity = IdempotencyActivitySource.StartStoreActivity("claim", request.Key))
+        {
+            claimResult = await _store.TryClaimAsync(request.Key, request.Fingerprint, request.ClaimTtl, requestAborted);
+            claimActivity?.SetTag("idempotency.claim.result", claimResult switch
+            {
+                ClaimResult.Claimed => "claimed",
+                ClaimResult.Completed => "completed",
+                ClaimResult.AlreadyClaimed => "already_claimed",
+                ClaimResult.FingerprintMismatch => "fingerprint_mismatch",
+                _ => "unknown"
+            });
+        }
+        RecordStoreLatency(claimTs, "claim");
+        return claimResult;
+    }
+
     private async Task HandleNewRequestAsync(
         HttpContext httpContext,
-        string key,
-        string fingerprint,
-        TimeSpan responseTtl,
+        GuardedRequest request,
+        string claimToken,
         CancellationToken requestAborted)
     {
-        _logger.LogInformation("Idempotency key claimed: {Key}", key);
+        _logger.LogInformation("Idempotency key claimed: {Key}", request.Key);
 
-        var context = new IdempotencyContext(key, fingerprint, false, _keyGenerator);
+        var context = new IdempotencyContext(request.Key, request.Fingerprint, false, _keyGenerator);
         httpContext.Items["IdempotencyContext"] = context;
 
         var originalBodyStream = httpContext.Response.Body;
-        var responseStored = false;
+        var claimSettled = false;
 
         try
         {
@@ -186,8 +191,18 @@ public class IdempotencyMiddleware
 
             responseBody.Position = 0;
 
-            if (responseBody.TryGetBuffer(out var responseBuffer)
-                && responseBuffer.Count <= _options.MaxResponseBodySize)
+            var statusCode = httpContext.Response.StatusCode;
+
+            if (!responseBody.TryGetBuffer(out var responseBuffer)
+                || responseBuffer.Count > _options.MaxResponseBodySize)
+            {
+                claimSettled = true;
+                await ReleaseClaimAsync(request, claimToken);
+                _logger.LogWarning(
+                    "Response body for key {Key} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
+                    request.Key, _options.MaxResponseBodySize);
+            }
+            else
             {
                 var headers = new Dictionary<string, string[]>();
                 foreach (var header in httpContext.Response.Headers)
@@ -200,37 +215,37 @@ public class IdempotencyMiddleware
 
                 var idempotentResponse = new IdempotentResponse
                 {
-                    StatusCode = httpContext.Response.StatusCode,
+                    StatusCode = statusCode,
                     Headers = headers,
                     Body = responseBuffer.Count == responseBuffer.Array!.Length
                         ? responseBuffer.Array
                         : responseBuffer.AsSpan().ToArray()
                 };
 
+                bool stored;
                 var setTs = Stopwatch.GetTimestamp();
-                using (IdempotencyActivitySource.StartStoreActivity("set_response", key))
+                using (IdempotencyActivitySource.StartStoreActivity("set_response", request.Key))
                 {
-                    await _store.SetResponseAsync(key, idempotentResponse, responseTtl, requestAborted);
+                    stored = await _store.SetResponseAsync(
+                        request.Key, claimToken, idempotentResponse, request.ResponseTtl, requestAborted);
                 }
                 RecordStoreLatency(setTs, "set_response");
-                responseStored = true;
+                claimSettled = true;
 
-                _logger.LogInformation(
-                    "Idempotent response stored for key {Key}, status {StatusCode}",
-                    key, httpContext.Response.StatusCode);
-            }
-            else
-            {
-                var releaseTs = Stopwatch.GetTimestamp();
-                using (IdempotencyActivitySource.StartStoreActivity("release", key))
+                if (stored)
                 {
-                    await _store.ReleaseClaimAsync(key, CancellationToken.None);
+                    _logger.LogInformation(
+                        "Idempotent response stored for key {Key}, status {StatusCode}",
+                        request.Key, statusCode);
                 }
-                RecordStoreLatency(releaseTs, "release");
-                IdempotencyMetrics.ClaimsReleased.Add(1);
-                _logger.LogWarning(
-                    "Response body for key {Key} exceeds MaxResponseBodySize ({MaxSize} bytes), claim released",
-                    key, _options.MaxResponseBodySize);
+                else
+                {
+                    IdempotencyMetrics.ClaimsLost.Add(1);
+                    _logger.LogWarning(
+                        "Response for key {Key} not stored: the handler outlived ClaimTtl ({ClaimTtl}) and the claim was lost. " +
+                        "A retry may run the handler again; consider raising ClaimTtl",
+                        request.Key, request.ClaimTtl);
+                }
             }
 
             // Write to the original stream directly from the MemoryStream
@@ -240,18 +255,12 @@ public class IdempotencyMiddleware
         }
         catch (Exception ex)
         {
-            if (!responseStored)
+            if (!claimSettled)
             {
-                var releaseTs = Stopwatch.GetTimestamp();
-                using (IdempotencyActivitySource.StartStoreActivity("release", key))
-                {
-                    await _store.ReleaseClaimAsync(key, CancellationToken.None);
-                }
-                RecordStoreLatency(releaseTs, "release");
-                IdempotencyMetrics.ClaimsReleased.Add(1);
+                await ReleaseClaimAsync(request, claimToken);
+                _logger.LogWarning(ex, "Idempotency claim released after failure for key {Key}", request.Key);
             }
 
-            _logger.LogWarning(ex, "Idempotency claim released after failure for key {Key}", key);
             throw;
         }
         finally
@@ -260,40 +269,57 @@ public class IdempotencyMiddleware
         }
     }
 
-    private async Task ReplayResponseAsync(
-        HttpContext httpContext,
-        string key,
-        CancellationToken requestAborted)
+    private async Task ReleaseClaimAsync(GuardedRequest request, string claimToken)
+    {
+        var releaseTs = Stopwatch.GetTimestamp();
+        using (IdempotencyActivitySource.StartStoreActivity("release", request.Key))
+        {
+            await _store.ReleaseClaimAsync(request.Key, claimToken, CancellationToken.None);
+        }
+        RecordStoreLatency(releaseTs, "release");
+        IdempotencyMetrics.ClaimsReleased.Add(1);
+    }
+
+    private async Task<IdempotentResponse?> GetResponseAsync(GuardedRequest request, CancellationToken requestAborted)
     {
         IdempotentResponse? response;
         var getTs = Stopwatch.GetTimestamp();
-        using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
+        using (IdempotencyActivitySource.StartStoreActivity("get_response", request.Key))
         {
-            response = await _store.GetResponseAsync(key, requestAborted);
+            response = await _store.GetResponseAsync(request.Key, requestAborted);
         }
         RecordStoreLatency(getTs, "get_response");
+        return response;
+    }
+
+    private async Task ReplayResponseAsync(
+        HttpContext httpContext,
+        GuardedRequest request,
+        CancellationToken requestAborted)
+    {
+        var response = await GetResponseAsync(request, requestAborted);
 
         if (response is null)
         {
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
-                "Request is being processed", key);
+                "Request is being processed", request.Key);
             return;
         }
 
-        _logger.LogInformation("Replaying idempotent response for key {Key}, original status {StatusCode}", key, response.StatusCode);
+        _logger.LogInformation("Replaying idempotent response for key {Key}, original status {StatusCode}", request.Key, response.StatusCode);
 
         await _responseWriter.ReplayAsync(httpContext, response);
     }
 
     private async Task HandleConcurrentRequestAsync(
         HttpContext httpContext,
-        string key,
+        GuardedRequest request,
         CancellationToken requestAborted)
     {
         if (_options.ConcurrentRequestPolicy == ConcurrentRequestPolicy.ReturnConflict)
         {
             await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Conflict,
-                "Request with this idempotency key is currently being processed", key);
+                "Request with this idempotency key is currently being processed", request.Key);
             return;
         }
 
@@ -312,18 +338,12 @@ public class IdempotencyMiddleware
             }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
-            IdempotentResponse? response;
-            var pollTs = Stopwatch.GetTimestamp();
-            using (IdempotencyActivitySource.StartStoreActivity("get_response", key))
-            {
-                response = await _store.GetResponseAsync(key, requestAborted);
-            }
-            RecordStoreLatency(pollTs, "get_response");
+            var response = await GetResponseAsync(request, requestAborted);
 
             if (response is not null)
             {
                 IdempotencyMetrics.ReplaysTotal.Add(1);
-                _logger.LogInformation("Replaying idempotent response after wait for key {Key}", key);
+                _logger.LogInformation("Replaying idempotent response after wait for key {Key}", request.Key);
 
                 await _responseWriter.ReplayAsync(httpContext, response);
                 return;
@@ -331,7 +351,21 @@ public class IdempotencyMiddleware
         }
 
         await _responseWriter.WriteErrorAsync(httpContext, 409, IdempotencyErrorKind.Timeout,
-            "Timed out waiting for concurrent request to complete", key);
+            "Timed out waiting for concurrent request to complete", request.Key);
+    }
+
+    private async Task WriteFingerprintMismatchAsync(
+        HttpContext httpContext,
+        GuardedRequest request,
+        ClaimResult.FingerprintMismatch mismatch)
+    {
+        IdempotencyMetrics.FingerprintMismatchesTotal.Add(1);
+        _logger.LogWarning(
+            "Idempotency fingerprint mismatch for key {Key}. Expected: {Expected}, Received: {Received}",
+            request.Key, mismatch.ExpectedFingerprint, mismatch.ActualFingerprint);
+        await _responseWriter.WriteErrorAsync(httpContext, 422, IdempotencyErrorKind.FingerprintMismatch,
+            "Idempotency key has already been used with a different request payload",
+            request.Key);
     }
 
     private static void RecordStoreLatency(long startTimestamp, string operation)
@@ -340,4 +374,10 @@ public class IdempotencyMiddleware
             Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds,
             new KeyValuePair<string, object?>("operation", operation));
     }
+
+    private sealed record GuardedRequest(
+        string Key,
+        string Fingerprint,
+        TimeSpan ClaimTtl,
+        TimeSpan ResponseTtl);
 }

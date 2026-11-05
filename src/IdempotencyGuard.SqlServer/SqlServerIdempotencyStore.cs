@@ -9,7 +9,8 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
 {
     private readonly string _connectionString;
     private readonly SqlServerIdempotencyOptions _options;
-    private bool _tableCreated;
+    private readonly SemaphoreSlim _tableCreationLock = new(1, 1);
+    private volatile bool _tableCreated;
 
     public SqlServerIdempotencyStore(IOptions<SqlServerIdempotencyOptions> options)
     {
@@ -34,6 +35,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
 
         var now = DateTime.UtcNow;
         var expiresAt = now.Add(claimTtl);
+        var claimToken = Guid.NewGuid().ToString("N");
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $@"
@@ -41,8 +43,8 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             USING (SELECT @key AS [Key]) AS source
             ON target.[Key] = source.[Key]
             WHEN NOT MATCHED THEN
-                INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc)
-                VALUES (@key, @fingerprint, 'claimed', @now, @expires)
+                INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc, ClaimToken)
+                VALUES (@key, @fingerprint, 'claimed', @now, @expires, @claim_token)
             WHEN MATCHED THEN
                 UPDATE SET ClaimedAtUtc = target.ClaimedAtUtc
             OUTPUT $action AS MergeAction,
@@ -54,20 +56,21 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
         cmd.Parameters.AddWithValue("@fingerprint", requestFingerprint);
         cmd.Parameters.AddWithValue("@now", now);
         cmd.Parameters.AddWithValue("@expires", expiresAt);
+        cmd.Parameters.AddWithValue("@claim_token", claimToken);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         if (!await reader.ReadAsync(ct))
         {
             // Should not happen — MERGE always outputs a row now
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         var action = reader.GetString(reader.GetOrdinal("MergeAction"));
 
         if (action == "INSERT")
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         // action == "UPDATE" — key already exists
@@ -80,7 +83,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
         if (existingExpiresAt < now)
         {
             await reader.CloseAsync();
-            return await ReclaimExpiredAsync(conn, key, requestFingerprint, state, claimTtl, ct);
+            return await ReclaimExpiredAsync(conn, key, requestFingerprint, state, claimToken, claimTtl, ct);
         }
 
         if (existingFingerprint != requestFingerprint)
@@ -98,8 +101,9 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
         return new ClaimResult.AlreadyClaimed(claimedEntry);
     }
 
-    public async Task SetResponseAsync(
+    public async Task<bool> SetResponseAsync(
         string key,
+        string claimToken,
         IdempotentResponse response,
         TimeSpan responseTtl,
         CancellationToken ct = default)
@@ -115,29 +119,32 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
                 ExpiresAtUtc = @expires_at,
                 StatusCode = @status_code,
                 HeadersJson = @headers,
-                ResponseBody = @body
-            WHERE [Key] = @key";
+                ResponseBody = @body,
+                ClaimToken = NULL
+            WHERE [Key] = @key AND State = 'claimed' AND ClaimToken = @claim_token";
 
         cmd.Parameters.AddWithValue("@key", key);
+        cmd.Parameters.AddWithValue("@claim_token", claimToken);
         cmd.Parameters.AddWithValue("@completed_at", DateTime.UtcNow);
         cmd.Parameters.AddWithValue("@expires_at", DateTime.UtcNow.Add(responseTtl));
         cmd.Parameters.AddWithValue("@status_code", response.StatusCode);
         cmd.Parameters.AddWithValue("@headers", JsonSerializer.Serialize(response.Headers));
         cmd.Parameters.AddWithValue("@body", GetBodyBytes(response.Body));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
-    public async Task ReleaseClaimAsync(string key, CancellationToken ct = default)
+    public async Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default)
     {
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"DELETE FROM {FullTableName} WHERE [Key] = @key AND State = 'claimed'";
+        cmd.CommandText = $"DELETE FROM {FullTableName} WHERE [Key] = @key AND State = 'claimed' AND ClaimToken = @claim_token";
         cmd.Parameters.AddWithValue("@key", key);
+        cmd.Parameters.AddWithValue("@claim_token", claimToken);
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
     public async Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)
@@ -176,7 +183,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
     }
 
     private async Task<ClaimResult> ReclaimExpiredAsync(
-        SqlConnection conn, string key, string fingerprint, string previousState, TimeSpan claimTtl, CancellationToken ct)
+        SqlConnection conn, string key, string fingerprint, string previousState, string claimToken, TimeSpan claimTtl, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
 
@@ -186,12 +193,14 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             SET Fingerprint = @fingerprint, State = 'claimed',
                 ClaimedAtUtc = @now, ExpiresAtUtc = @expires,
                 CompletedAtUtc = NULL, StatusCode = NULL,
-                HeadersJson = NULL, ResponseBody = NULL
+                HeadersJson = NULL, ResponseBody = NULL,
+                ClaimToken = @claim_token
             WHERE [Key] = @key AND State = @previous_state AND ExpiresAtUtc < @now";
 
         cmd.Parameters.AddWithValue("@key", key);
         cmd.Parameters.AddWithValue("@fingerprint", fingerprint);
         cmd.Parameters.AddWithValue("@previous_state", previousState);
+        cmd.Parameters.AddWithValue("@claim_token", claimToken);
         cmd.Parameters.AddWithValue("@now", now);
         cmd.Parameters.AddWithValue("@expires", now.Add(claimTtl));
 
@@ -199,7 +208,7 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
 
         if (rows > 0)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         // Someone else reclaimed it between our read and update — re-read to check fingerprint
@@ -238,17 +247,18 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             USING (SELECT @key AS [Key]) AS source
             ON target.[Key] = source.[Key]
             WHEN NOT MATCHED THEN
-                INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc)
-                VALUES (@key, @fingerprint, 'claimed', @now, @expires);";
+                INSERT ([Key], Fingerprint, State, ClaimedAtUtc, ExpiresAtUtc, ClaimToken)
+                VALUES (@key, @fingerprint, 'claimed', @now, @expires, @claim_token);";
         insertCmd.Parameters.AddWithValue("@key", key);
         insertCmd.Parameters.AddWithValue("@fingerprint", fingerprint);
         insertCmd.Parameters.AddWithValue("@now", now);
         insertCmd.Parameters.AddWithValue("@expires", now.Add(claimTtl));
+        insertCmd.Parameters.AddWithValue("@claim_token", claimToken);
 
         var inserted = await insertCmd.ExecuteNonQueryAsync(ct);
         if (inserted > 0)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         // Another request beat us to the insert — re-read to check fingerprint
@@ -312,33 +322,51 @@ public class SqlServerIdempotencyStore : IIdempotencyStore, IPurgableIdempotency
             return;
         }
 
-        await using var conn = new SqlConnection(_connectionString);
-        await conn.OpenAsync(ct);
+        await _tableCreationLock.WaitAsync(ct);
+        try
+        {
+            if (_tableCreated)
+            {
+                return;
+            }
 
-        await using var cmd = conn.CreateCommand();
-        cmd.Parameters.AddWithValue("@tableName", _options.TableName);
-        cmd.Parameters.AddWithValue("@schemaName", _options.SchemaName);
-        cmd.CommandText = $@"
-            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = @tableName AND schema_id = SCHEMA_ID(@schemaName))
-            BEGIN
-                CREATE TABLE {FullTableName} (
-                    [Key]           NVARCHAR(256)   NOT NULL PRIMARY KEY,
-                    Fingerprint     NVARCHAR(128)   NOT NULL,
-                    State           NVARCHAR(20)    NOT NULL DEFAULT 'claimed',
-                    ClaimedAtUtc    DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME(),
-                    CompletedAtUtc  DATETIME2       NULL,
-                    ExpiresAtUtc    DATETIME2       NOT NULL,
-                    StatusCode      INT             NULL,
-                    HeadersJson     NVARCHAR(MAX)   NULL,
-                    ResponseBody    VARBINARY(MAX)  NULL
-                );
+            await using var conn = new SqlConnection(_connectionString);
+            await conn.OpenAsync(ct);
 
-                CREATE NONCLUSTERED INDEX IX_{_options.TableName}_Expires
-                    ON {FullTableName} (ExpiresAtUtc);
-            END";
+            await using var cmd = conn.CreateCommand();
+            cmd.Parameters.AddWithValue("@tableName", _options.TableName);
+            cmd.Parameters.AddWithValue("@schemaName", _options.SchemaName);
+            cmd.Parameters.AddWithValue("@qualifiedName", FullTableName);
+            cmd.CommandText = $@"
+                IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = @tableName AND schema_id = SCHEMA_ID(@schemaName))
+                BEGIN
+                    CREATE TABLE {FullTableName} (
+                        [Key]           NVARCHAR(256)   NOT NULL PRIMARY KEY,
+                        Fingerprint     NVARCHAR(128)   NOT NULL,
+                        State           NVARCHAR(20)    NOT NULL DEFAULT 'claimed',
+                        ClaimedAtUtc    DATETIME2       NOT NULL DEFAULT SYSUTCDATETIME(),
+                        CompletedAtUtc  DATETIME2       NULL,
+                        ExpiresAtUtc    DATETIME2       NOT NULL,
+                        StatusCode      INT             NULL,
+                        HeadersJson     NVARCHAR(MAX)   NULL,
+                        ResponseBody    VARBINARY(MAX)  NULL,
+                        ClaimToken      NVARCHAR(64)    NULL
+                    );
 
-        await cmd.ExecuteNonQueryAsync(ct);
-        _tableCreated = true;
+                    CREATE NONCLUSTERED INDEX IX_{_options.TableName}_Expires
+                        ON {FullTableName} (ExpiresAtUtc);
+                END
+
+                IF COL_LENGTH(@qualifiedName, 'ClaimToken') IS NULL
+                    ALTER TABLE {FullTableName} ADD ClaimToken NVARCHAR(64) NULL;";
+
+            await cmd.ExecuteNonQueryAsync(ct);
+            _tableCreated = true;
+        }
+        finally
+        {
+            _tableCreationLock.Release();
+        }
     }
 
     private static IdempotencyEntry ReadEntry(SqlDataReader reader, string key)

@@ -12,6 +12,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
 
     private static readonly LuaScript ClaimScript = LuaScript.Prepare(LoadScript("claim.lua"));
     private static readonly LuaScript CompleteScript = LuaScript.Prepare(LoadScript("complete.lua"));
+    private static readonly LuaScript ReleaseScript = LuaScript.Prepare(LoadScript("release.lua"));
 
     internal RedisIdempotencyStore(RedisConnectionManager redis, IOptions<RedisIdempotencyOptions> options)
     {
@@ -28,18 +29,20 @@ public class RedisIdempotencyStore : IIdempotencyStore
         var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+        var claimToken = Guid.NewGuid().ToString("N");
 
         var result = await db.ScriptEvaluateAsync(ClaimScript, new
         {
             key = (RedisKey)redisKey,
             fingerprint = requestFingerprint,
             claim_ttl_ms = (long)claimTtl.TotalMilliseconds,
-            current_timestamp = timestamp
+            current_timestamp = timestamp,
+            claim_token = claimToken
         });
 
         if (result.IsNull)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         var existingJson = (string)result!;
@@ -47,7 +50,7 @@ public class RedisIdempotencyStore : IIdempotencyStore
 
         if (existing is null)
         {
-            return new ClaimResult.Claimed();
+            return new ClaimResult.Claimed(claimToken);
         }
 
         if (existing.State == "completed")
@@ -70,8 +73,9 @@ public class RedisIdempotencyStore : IIdempotencyStore
         return new ClaimResult.AlreadyClaimed(claimedEntry);
     }
 
-    public async Task SetResponseAsync(
+    public async Task<bool> SetResponseAsync(
         string key,
+        string claimToken,
         IdempotentResponse response,
         TimeSpan responseTtl,
         CancellationToken ct = default)
@@ -91,19 +95,29 @@ public class RedisIdempotencyStore : IIdempotencyStore
 
         var json = JsonSerializer.Serialize(entry);
 
-        await db.ScriptEvaluateAsync(CompleteScript, new
+        var result = await db.ScriptEvaluateAsync(CompleteScript, new
         {
             key = (RedisKey)redisKey,
+            claim_token = claimToken,
             response = json,
             response_ttl_ms = (long)responseTtl.TotalMilliseconds
         });
+
+        return (long)result == 1;
     }
 
-    public async Task ReleaseClaimAsync(string key, CancellationToken ct = default)
+    public async Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default)
     {
         var db = await _redis.GetDatabaseAsync();
         var redisKey = $"{_options.KeyPrefix}{key}";
-        await db.KeyDeleteAsync(redisKey);
+
+        var result = await db.ScriptEvaluateAsync(ReleaseScript, new
+        {
+            key = (RedisKey)redisKey,
+            claim_token = claimToken
+        });
+
+        return (long)result == 1;
     }
 
     public async Task<IdempotentResponse?> GetResponseAsync(string key, CancellationToken ct = default)

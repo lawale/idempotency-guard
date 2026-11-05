@@ -8,6 +8,7 @@ public class IdempotencyEntry
     public DateTime ClaimedAtUtc { get; init; }
     public DateTime? CompletedAtUtc { get; set; }
     public DateTime ExpiresAtUtc { get; set; }
+    public string? ClaimToken { get; init; }
 
     public int? StatusCode { get; set; }
     public string? ResponseHeaders { get; set; }
