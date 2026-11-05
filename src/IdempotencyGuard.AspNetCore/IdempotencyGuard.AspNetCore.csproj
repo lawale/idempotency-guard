@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>IdempotencyGuard.AspNetCore</PackageId>
-    <Description>ASP.NET Core middleware for automatic idempotent request handling. Provides Idempotency-Key header processing, request fingerprinting, response caching and replay, and per-endpoint configuration via attributes.</Description>
-    <PackageTags>idempotency;idempotent;aspnetcore;middleware;api;http;deduplication;retry;dotnet</PackageTags>
+    <Description>Idempotency-Key middleware for ASP.NET Core. Stops retries and concurrent duplicates from running a request twice, with request fingerprinting, response replay and per-endpoint configuration for controllers and minimal APIs.</Description>
+    <PackageTags>idempotency;idempotent;idempotency-key;aspnetcore;minimal-api;middleware;api;http;deduplication;retry;dotnet</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 

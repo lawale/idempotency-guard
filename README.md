@@ -1,8 +1,11 @@
 # IdempotencyGuard.NET
 
-A .NET middleware library that provides robust idempotency guarantees for payment APIs and financial transaction endpoints. Implements the claim-then-process pattern to prevent duplicate transaction processing across distributed systems, even under concurrent requests, network retries, and timeout scenarios.
+[![CI](https://github.com/lawale/idempotency-guard/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/lawale/idempotency-guard/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/IdempotencyGuard.AspNetCore.svg)](https://www.nuget.org/packages/IdempotencyGuard.AspNetCore)
 
-> Companion project to [Payments Engineering](https://olawalelawal.dev) blog series.
+Idempotency-Key middleware for ASP.NET Core. A client retries, or sends the same request twice at once, and your handler still runs one time: the first request claims the key and later ones get its stored response. Claims stay atomic across instances on Redis, PostgreSQL or SQL Server.
+
+It came out of a payments service running in production, so duplicate charges shaped the design. It works on any endpoint where running a request twice does damage, in controllers and minimal APIs alike. The [stress suite and overhead numbers](docs/stability-and-performance.md) show what's been tested, and what hasn't.
 
 ## Why
 
@@ -423,6 +426,31 @@ builder.Services.AddOpenTelemetry()
 builder.Services.AddHealthChecks()
     .AddCheck<IdempotencyStoreHealthCheck>("idempotency-store");
 ```
+
+## Stability and Performance
+
+The library was extracted from a payments service running in production, and the repo backs that up with a stress suite that tries to break the idempotency guarantee under load.
+
+`tests/IdempotencyGuard.Stress.Tests` runs six concurrency scenarios against every store (in-memory, Redis, PostgreSQL, SQL Server) on real Testcontainers instances, plus six end-to-end scenarios through the ASP.NET Core pipeline: thundering herds on one key, interleaved multi-key load, mutual exclusion on claim/release cycles, racing fingerprints, read storms on a completed entry, and expired-claim takeover. 36 tests, all green, run on every push.
+
+```bash
+dotnet test tests/IdempotencyGuard.Stress.Tests/
+
+# ten times the load
+IDEMPOTENCY_STRESS_SCALE=10 dotnet test tests/IdempotencyGuard.Stress.Tests/
+```
+
+Measured overhead on an M2 Pro, .NET 9, in-memory store, via BenchmarkDotNet:
+
+| Path | Mean | Allocated |
+|---|---:|---:|
+| Handler with no guard | 8.5 µs | 9.4 KB |
+| Guard, new key | 22.6 µs | 27.1 KB |
+| Guard, replayed response | 16.1 µs | 25.4 KB |
+
+Around 14 µs per first request, 7.6 µs per replay, on top of whatever your store costs. One caveat worth reading before you send large payloads through it: fingerprint hashing normalises JSON, so a 64 KB body costs 1.25 ms unless you narrow it with `FingerprintProperties` or `MaxFingerprintBodySize`.
+
+Full numbers, methodology and limitations: [docs/stability-and-performance.md](docs/stability-and-performance.md).
 
 ## License
 
