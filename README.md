@@ -368,7 +368,7 @@ app.Use(async (context, next) =>
 });
 ```
 
-The prefix is limited to 128 characters.
+The prefix is limited to 128 characters. End it with a delimiter, as above. Without one, `tenant-1` with the key `2abc` and `tenant-12` with the key `abc` get the same downstream key. Prefixes can't protect tenants from each other on their own, so scope keys as well if callers aren't trusted.
 
 ## Store Keys
 
@@ -388,7 +388,7 @@ var storeKey = IdempotencyStoreKey.For("abc-123", scope: "alice", policyName: "u
 
 Pass `policyName` only if that policy defines its own `KeyScope`.
 
-`IIdempotencyContext.Key` and downstream keys don't use this format. They still derive from the prefix, scope and client's key.
+`IIdempotencyContext.Key` and downstream keys don't use this format. They still derive from the prefix, scope and client's key. On a scoped request, `Key` contains a control character that separates the scope from the client's key, so a client can't send a key that imitates a scoped one. That makes it invalid in an HTTP header, so use `DownstreamKey` to call another service.
 
 ## Stores
 

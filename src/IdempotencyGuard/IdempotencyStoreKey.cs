@@ -15,6 +15,8 @@ public static class IdempotencyStoreKey
     /// </summary>
     public const int MaxPrefixLength = 128;
 
+    private const char ScopeSeparator = '\u001F';
+
     /// <summary>
     /// Computes the store key for a client's key, for finding its entry when debugging.
     /// </summary>
@@ -31,14 +33,20 @@ public static class IdempotencyStoreKey
     }
 
     /// <summary>
-    /// Isolates one caller from another. A policy with its own resolver also hashes its name,
-    /// so user "abc" and service "abc" stay apart under different policies. The fixed length
-    /// means a scope can't run into the client's key and collide.
+    /// Isolates one caller from another. The hash is unkeyed, so anyone can compute a segment.
+    /// What stops a caller on a route with no scope sending one as part of their key is the
+    /// separator: control characters in client keys get a 400.
+    /// <para>
+    /// The identity is tagged and the policy name's length included, so a global scope can't
+    /// imitate a policy's, and user "abc" and service "abc" stay apart under different policies.
+    /// </para>
     /// </summary>
     internal static string ScopeSegment(string scope, string? policyName)
     {
-        var identity = policyName is null ? scope : $"{policyName}\0{scope}";
-        return $"{IdempotencyKeyHash.Compute(identity)}:";
+        var identity = policyName is null
+            ? $"g\0{scope}"
+            : $"p\0{policyName.Length}:{policyName}\0{scope}";
+        return $"{IdempotencyKeyHash.Compute(identity)}{ScopeSeparator}";
     }
 
     internal static string Digest(string? scopeSegment, string rawKey) =>

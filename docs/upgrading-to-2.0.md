@@ -82,6 +82,7 @@ Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct
 - Keys differing only by case are now separate on SQL Server, matching the other stores.
 - Numbers now hash as numbers in fingerprints, so `{"amount":1}` and `{"amount":"1"}` no longer match.
 - Fingerprint fields can no longer run into each other, so `POST /pay:{}` with no body no longer matches `POST /pay` with the body `{}`.
+- End `KeyPrefix` with a delimiter if it doesn't have one already. Without one, `tenant-1` with the key `2abc` and `tenant-12` with the key `abc` get the same downstream key. Adding a delimiter changes your downstream keys, so treat it like turning on key scoping.
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope.
 - A request that waited under `WaitThenReplay` now takes over if the original request fails, rather than timing out with a 409.
 - A client disconnecting no longer cancels the response write. On the SQL stores, this used to discard the response and release the claim, so the retry ran the handler a second time.

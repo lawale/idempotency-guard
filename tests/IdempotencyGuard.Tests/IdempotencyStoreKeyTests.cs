@@ -20,13 +20,29 @@ public class IdempotencyStoreKeyTests
     [Fact]
     public void Scoped_key_includes_the_scope_in_the_digest()
     {
-        IdempotencyStoreKey.For("abc-123", scope: "alice").Should().Be("489b7fa0d5423f45f38231747e99182c");
+        IdempotencyStoreKey.For("abc-123", scope: "alice").Should().Be("8ab43145865bc880a03538251e2aab8a");
     }
 
     [Fact]
     public void Policy_scoped_key_includes_the_policy_name_in_the_digest()
     {
-        IdempotencyStoreKey.For("abc-123", scope: "alice", policyName: "user").Should().Be("a2f93b1b4d6ae97f8c2a910e10171f87");
+        IdempotencyStoreKey.For("abc-123", scope: "alice", policyName: "user").Should().Be("73d3c48096de2165df80d3f8f3534c8f");
+    }
+
+    [Fact]
+    public void Global_scope_cannot_imitate_a_policy_scope()
+    {
+        IdempotencyStoreKey.For("k", scope: "user\0alice")
+            .Should().NotBe(IdempotencyStoreKey.For("k", scope: "alice", policyName: "user"));
+        IdempotencyStoreKey.For("k", scope: "p\04:user\0alice")
+            .Should().NotBe(IdempotencyStoreKey.For("k", scope: "alice", policyName: "user"));
+    }
+
+    [Fact]
+    public void Policy_name_cannot_run_into_the_scope()
+    {
+        IdempotencyStoreKey.For("k", scope: "c", policyName: "a\0b")
+            .Should().NotBe(IdempotencyStoreKey.For("k", scope: "b\0c", policyName: "a"));
     }
 
     [Theory]

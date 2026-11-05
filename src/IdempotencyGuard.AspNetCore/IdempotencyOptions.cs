@@ -40,7 +40,8 @@ public class IdempotencyOptions
     /// Prefix prepended to every idempotency key before it is passed to the store.
     /// Use this to namespace keys by environment or tenant (e.g. <c>"staging:"</c>, <c>"tenant-42:"</c>).
     /// It stays readable in the store, ahead of the digest, so prefix scans still work. Limited to
-    /// <see cref="IdempotencyStoreKey.MaxPrefixLength"/> characters.
+    /// <see cref="IdempotencyStoreKey.MaxPrefixLength"/> characters. End it with a delimiter, or
+    /// <c>tenant-1</c> with key <c>2abc</c> gets the same downstream key as <c>tenant-12</c> with <c>abc</c>.
     /// Default: <c>null</c> (no prefix). Applied across all store implementations.
     /// </summary>
     public string? KeyPrefix { get; set; }
