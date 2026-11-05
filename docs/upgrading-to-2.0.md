@@ -66,6 +66,10 @@ Task<bool> SetResponseAsync(string key, string claimToken, IdempotentResponse re
 Task<bool> ReleaseClaimAsync(string key, string claimToken, CancellationToken ct = default);
 ```
 
+### `FingerprintResult`
+
+`RequestBody` is gone, because nothing read it. A custom `IFingerprintBuilder` now returns `new FingerprintResult(fingerprint)`.
+
 ### Package changes
 
 - `IdempotencyOptions`, `IdempotencyPolicy`, `HeaderFilter`, `CleanupOptions` and the related enums now ship in `IdempotencyGuard.AspNetCore`, because they refer to `HttpContext`. The namespace is still `IdempotencyGuard`. Only code that references the core package without the AspNetCore package is affected.

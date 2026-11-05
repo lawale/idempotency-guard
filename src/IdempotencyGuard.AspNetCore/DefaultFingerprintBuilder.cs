@@ -26,11 +26,9 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
     public async Task<FingerprintResult> ComputeAsync(
         HttpContext context, IdempotentAttribute? attribute)
     {
-        var requestBody = _options.MaxFingerprintBodySize > 0
+        var fingerprintBody = _options.MaxFingerprintBodySize > 0
             ? await ReadRequestBodyAsync(context.Request, _options.MaxFingerprintBodySize)
             : null;
-
-        var fingerprintBody = requestBody;
 
         if (attribute?.FingerprintProperties is { Length: > 0 } fingerprintProperties)
             fingerprintBody = RequestFingerprint.ExtractProperties(fingerprintBody, fingerprintProperties);
@@ -43,7 +41,7 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
             fingerprintBody,
             extraFingerprint);
 
-        return new FingerprintResult(fingerprint, requestBody);
+        return new FingerprintResult(fingerprint);
     }
 
     private static async Task<byte[]?> ReadRequestBodyAsync(HttpRequest request, int maxBytesToRead)

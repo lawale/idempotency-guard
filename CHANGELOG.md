@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking:** numbers now hash as numbers, which changes the fingerprint of any JSON body containing one
 - Logs and spans now carry the store key's digest, so a log line leads straight to its row
 - `IdempotencyProblem.IdempotencyKey` now holds the key the client sent, without any prefix or scope
+- **Breaking:** `FingerprintResult` no longer has a `RequestBody`, which nothing read
 
 ### Fixed
 - `MaxFingerprintBodySize = 0` read the whole request body into memory with no limit, when it's meant to skip the body
