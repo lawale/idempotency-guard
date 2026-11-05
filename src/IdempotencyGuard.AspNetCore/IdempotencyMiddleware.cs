@@ -340,15 +340,30 @@ public class IdempotencyMiddleware
             }
             delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 1.5, 2000));
 
-            var response = await GetResponseAsync(request, requestAborted);
-
-            if (response is not null)
+            // Claim rather than only read: if the original request failed and released its
+            // claim, no response will ever appear, and this request is free to take over.
+            switch (await TryClaimAsync(request, requestAborted))
             {
-                IdempotencyMetrics.ReplaysTotal.Add(1);
-                _logger.LogInformation("Replaying idempotent response after wait for key {Key}", request.Key);
+                case ClaimResult.Claimed claimed:
+                    IdempotencyMetrics.ClaimsTotal.Add(1);
+                    await HandleNewRequestAsync(httpContext, request, claimed.ClaimToken, requestAborted);
+                    return;
 
-                await _responseWriter.ReplayAsync(httpContext, response);
-                return;
+                case ClaimResult.Completed:
+                    var response = await GetResponseAsync(request, requestAborted);
+                    if (response is not null)
+                    {
+                        IdempotencyMetrics.ReplaysTotal.Add(1);
+                        _logger.LogInformation("Replaying idempotent response after wait for key {Key}", request.Key);
+
+                        await _responseWriter.ReplayAsync(httpContext, response);
+                        return;
+                    }
+                    break;
+
+                case ClaimResult.FingerprintMismatch mismatch:
+                    await WriteFingerprintMismatchAsync(httpContext, request, mismatch);
+                    return;
             }
         }
 
