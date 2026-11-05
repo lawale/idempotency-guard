@@ -85,7 +85,21 @@ public class IdempotencyOptions
     public Func<int, bool>? ShouldStoreResponse { get; set; }
 
     /// <summary>
-    /// Silences the startup warning logged when no <see cref="KeyScope"/> is configured.
+    /// Whether to check endpoints at startup: that named policies are registered, and that no
+    /// route is left unscoped while others have a scope. Default: <c>null</c>, which checks in the
+    /// Development environment only, like <c>ValidateOnBuild</c>.
+    /// <para>
+    /// Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the
+    /// first request, so this adds about 1 ms per minimal API endpoint with typed parameters to
+    /// startup. With the check off, an unregistered policy fails each request that uses it with an
+    /// <see cref="InvalidOperationException"/> before the handler runs.
+    /// </para>
+    /// </summary>
+    public bool? ValidateEndpointsOnStartup { get; set; }
+
+    /// <summary>
+    /// Silences the startup warnings about unscoped keys: the one logged when no
+    /// <see cref="KeyScope"/> is configured, and the one listing unscoped routes.
     /// Set this when a single trusted caller owns the whole key space.
     /// </summary>
     public bool SuppressUnscopedKeysWarning { get; set; }

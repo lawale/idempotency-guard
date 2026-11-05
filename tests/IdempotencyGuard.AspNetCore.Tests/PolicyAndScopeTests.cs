@@ -313,7 +313,7 @@ public class PolicyAndScopeTests : IAsyncLifetime
     {
         _unknownPolicyEndpoint = true;
 
-        var act = () => StartAsync(_ => { });
+        var act = () => StartAsync(options => options.ValidateEndpointsOnStartup = true);
 
         (await act.Should().ThrowAsync<InvalidOperationException>())
             .Which.Message.Should().Contain("does-not-exist").And.Contain("/misspelled");

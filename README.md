@@ -195,7 +195,7 @@ builder.Services.AddIdempotencyGuard(options =>
 app.MapPost(...).RequireIdempotency(o => o.Policy = "cache-all");   // minimal API
 ```
 
-An endpoint that names an unregistered policy fails at startup.
+An endpoint that names an unregistered policy fails at startup in Development, and otherwise fails each request that uses it before the handler runs. See [Startup Validation](#startup-validation).
 
 ### Selective Fingerprinting
 
@@ -290,7 +290,7 @@ Built-in deny list: `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Aut
 
 ## Scoping Keys to Callers
 
-**By default, every caller shares one key space.** Any caller who presents a key gets the response stored under it, so on an API with more than one caller you should set a scope. The app logs a warning at startup until you do, which `SuppressUnscopedKeysWarning` turns off if a single trusted caller owns the key space.
+**By default, every caller shares one key space.** Any caller who presents a key gets the response stored under it, so on an API with more than one caller you should set a scope. The app logs a warning at startup until you do, which `SuppressUnscopedKeysWarning` turns off if a single trusted caller owns the key space. If some routes have a scope and others don't, [startup validation](#startup-validation) lists the ones that don't.
 
 The library doesn't guess the identifier, because that depends on your system: `sub` is meaningless for API keys, and a tenant may be the right boundary rather than a user.
 
@@ -349,6 +349,20 @@ options.ShouldStoreResponse = status => status < 500;
 When it returns `false`, the claim is released and the client still gets the original response.
 
 **Be careful with this on endpoints that have side effects.** If the handler charged a customer and then returned a 500, the retry charges them again, unless the downstream call used a [downstream key](#downstream-key-generation).
+
+## Startup Validation
+
+`ValidateEndpointsOnStartup` checks your endpoints when the app starts: that every named policy is registered, and that no route is left unscoped while others have a scope. Like `ValidateOnBuild`, it's on in Development and off elsewhere unless you set it:
+
+```csharp
+options.ValidateEndpointsOnStartup = true; // Also check outside Development
+```
+
+It's off by default in production because of the cost. Reading the endpoints makes ASP.NET Core build them, and routing builds its own copy on the first request regardless, so this is added time rather than moved time: about 1 ms per minimal API endpoint with typed parameters, or a second or so at 1,000 endpoints.
+
+With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
+
+`KeyPrefix` length and the warning about having no scope at all don't read endpoints, so they always run.
 
 ## Key Prefixing
 

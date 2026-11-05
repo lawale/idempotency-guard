@@ -13,25 +13,38 @@ namespace IdempotencyGuard.AspNetCore;
 /// </summary>
 internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
 {
+    private const int MaxRoutesNamedInWarning = 20;
+
     private readonly IdempotencyOptions _options;
     private readonly IEnumerable<EndpointDataSource> _endpointSources;
+    private readonly IHostEnvironment _environment;
     private readonly ILogger<IdempotencyStartupValidator> _logger;
 
     public IdempotencyStartupValidator(
         IOptions<IdempotencyOptions> options,
         IEnumerable<EndpointDataSource> endpointSources,
+        IHostEnvironment environment,
         ILogger<IdempotencyStartupValidator> logger)
     {
         _options = options.Value;
         _endpointSources = endpointSources;
+        _environment = environment;
         _logger = logger;
     }
 
     public Task StartedAsync(CancellationToken cancellationToken)
     {
         ThrowIfKeyPrefixIsTooLong();
-        ThrowIfAnyEndpointUsesUnknownPolicy();
         WarnIfKeysAreUnscoped();
+
+        if (_options.ValidateEndpointsOnStartup ?? _environment.IsDevelopment())
+        {
+            // This read is the expensive part: it makes ASP.NET Core build every endpoint.
+            var endpoints = _endpointSources.SelectMany(source => source.Endpoints).ToList();
+            ThrowIfAnyEndpointUsesUnknownPolicy(endpoints);
+            WarnIfAnyRouteIsUnscoped(endpoints);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -45,9 +58,9 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
         }
     }
 
-    private void ThrowIfAnyEndpointUsesUnknownPolicy()
+    private void ThrowIfAnyEndpointUsesUnknownPolicy(List<Endpoint> endpoints)
     {
-        foreach (var endpoint in _endpointSources.SelectMany(source => source.Endpoints))
+        foreach (var endpoint in endpoints)
         {
             foreach (var attribute in endpoint.Metadata.GetOrderedMetadata<IdempotentAttribute>())
             {
@@ -70,6 +83,50 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
                 "stored under it. Set IdempotencyOptions.KeyScope on multi-caller APIs, or set " +
                 "SuppressUnscopedKeysWarning if a single trusted caller owns the key space.");
         }
+    }
+
+    /// <summary>
+    /// An app that scopes some routes looks finished, so the warning about having no scope at
+    /// all doesn't fire, but callers on its other routes still share one key space. An
+    /// <see cref="IdempotencyOptions.EndpointFilter"/> takes request paths rather than route
+    /// patterns, so with one set, there's no telling which routes it guards.
+    /// </summary>
+    private void WarnIfAnyRouteIsUnscoped(List<Endpoint> endpoints)
+    {
+        if (_options.KeyScope is not null
+            || !_options.AnyPolicyDefinesKeyScope
+            || _options.SuppressUnscopedKeysWarning
+            || _options.EndpointFilter is not null)
+        {
+            return;
+        }
+
+        var unscoped = endpoints.Where(IsGuardedWithoutScope).Select(endpoint => endpoint.DisplayName).ToList();
+        if (unscoped.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "{Count} route(s) have no idempotency key scope while other routes do, so callers on them share one key " +
+            "space and can replay each other's responses. Give them a policy with a KeyScope, set " +
+            "IdempotencyOptions.KeyScope, or set SuppressUnscopedKeysWarning if that's intended: {Routes}",
+            unscoped.Count,
+            string.Join(", ", unscoped.Take(MaxRoutesNamedInWarning)));
+    }
+
+    private bool IsGuardedWithoutScope(Endpoint endpoint)
+    {
+        var methods = endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;
+        if (methods is { Count: > 0 } && !methods.Any(method => _options.EnforcedMethods.Contains(method, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var attribute = IdempotentAttribute.Merge(endpoint.Metadata.GetOrderedMetadata<IdempotentAttribute>());
+        return attribute?.Policy is not { } name
+            || !_options.TryGetPolicy(name, out var policy)
+            || policy!.KeyScope is null;
     }
 
     public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;

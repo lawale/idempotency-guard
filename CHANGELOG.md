@@ -36,9 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The PostgreSQL and SQL Server READMEs listed the wrong name for the fingerprint column
 
 ### Added
-- Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup
+- Named policies (`IdempotencyOptions.AddPolicy`, `[Idempotent(Policy = "...")]`) for per-endpoint scoping and response storage. Unknown names fail at startup when `ValidateEndpointsOnStartup` is on
 - `ShouldStoreResponse` decides by status code whether a response is stored, globally or per policy. By default every response is stored, including 5xx
 - `MaxKeyLength` limits the keys accepted from clients. The default is 1024, and 0 disables the check
+- `ValidateEndpointsOnStartup` checks endpoints at startup: on in Development and off elsewhere unless set, because reading endpoints adds about 1 ms per minimal API endpoint with typed parameters. It reports unknown policies, and routes left unscoped while others have a scope
 - `IdempotencyStoreKey.For` computes the store key for a client's key, for debugging
 - `idempotency.claims.lost` counter for handlers that outlived `ClaimTtl` and lost their claim
 - Stress test suite (`tests/IdempotencyGuard.Stress.Tests`) covering thundering herds, interleaved multi-key load, claim/release mutual exclusion, racing fingerprints, read storms and expired-claim takeover against every store, plus end-to-end retry storms through the ASP.NET Core pipeline. Load is tunable via the `IDEMPOTENCY_STRESS_SCALE` environment variable
