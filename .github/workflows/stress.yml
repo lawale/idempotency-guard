@@ -1,0 +1,51 @@
+name: Stress
+
+# The CI run exercises the stress suite at its default size on every push. This
+# workflow runs the same scenarios an order of magnitude harder, plus the
+# benchmarks, so regressions in the concurrency guarantees or in per-request
+# overhead show up before a release rather than after one.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Stress scale multiplier (1 = the size CI runs)'
+        required: false
+        default: '10'
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Stress Tests
+        env:
+          IDEMPOTENCY_STRESS_SCALE: ${{ github.event.inputs.scale || '10' }}
+        run: dotnet test tests/IdempotencyGuard.Stress.Tests/ --no-build --configuration Release --logger "console;verbosity=detailed"
+
+      - name: Benchmarks
+        run: dotnet run --project benchmarks/IdempotencyGuard.Benchmarks --configuration Release --framework net9.0 --no-build -- --filter '*'
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: BenchmarkDotNet.Artifacts/results/
+          retention-days: 30

@@ -203,8 +203,7 @@ public class RedisConnectionResilienceTests
         public static async Task<RedisTestInstance> StartAsync(int? hostPort = null)
         {
             var configuredHostPort = hostPort ?? GetFreePort();
-            var container = new RedisBuilder()
-                .WithImage("redis:7-alpine")
+            var container = new RedisBuilder("redis:7-alpine")
                 .WithPortBinding(configuredHostPort, 6379)
                 .Build();
 
