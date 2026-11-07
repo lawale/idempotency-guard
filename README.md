@@ -80,6 +80,24 @@ curl -X POST /payments \
 # → 422 Unprocessable Entity
 ```
 
+### Generating Keys on the Client
+
+Create one key per payment attempt, not one per HTTP call. Create it when the attempt starts, keep it through retries and page reloads, and only replace it once the attempt has definitely failed and the user chooses to try again.
+
+An API client that adds a new key to every request looks like it works, but it leaves most duplicates unprotected:
+
+```typescript
+// Wrong: a double click or a retried call gets a new key
+api.interceptors.request.use(config => {
+  config.headers["Idempotency-Key"] = crypto.randomUUID();
+  return config;
+});
+```
+
+**Fingerprinting won't catch this.** The fingerprint is only compared against an existing record for the same key, so an identical payload under a new key counts as a new request. The handler runs again, and `DownstreamKey` produces a new value, so the provider doesn't see a duplicate either. The library can't reject these requests on the payload alone, because two identical payloads can be two real payments.
+
+If you don't fully control your clients, enforce one payment per order or checkout ID with a unique constraint in your own database. If your provider rejects duplicate references, build the reference from that ID as well, because a [`DownstreamKey` reference](#using-it-as-a-payment-reference) changes when the client's key does.
+
 ## How It Works
 
 ```
@@ -352,7 +370,7 @@ options.ShouldStoreResponse = status => status < 500;
 
 When it returns `false`, the claim is released and the client still gets the original response.
 
-**Be careful with this on endpoints that have side effects.** If the handler charged a customer and then returned a 500, the retry charges them again, unless the downstream call used a [downstream key](#downstream-key-generation).
+**Be careful with this on endpoints that have side effects.** If the handler charged a customer and then returned a 500, the retry charges them again, unless the downstream call used a [downstream key](#downstream-key-generation) and the retry arrives [while the provider still remembers it](#provider-key-lifetimes).
 
 ## Startup Validation
 
@@ -515,6 +533,26 @@ app.MapPost("/payments", async (
 ```
 
 Keep `:` out of your provider and operation names. The key, provider and operation are joined with `:` before hashing, so key `k:stripe` with `("charge", "x")` produces the same downstream key as key `k` with `("stripe", "charge:x")`. A client chooses the key, so a name containing `:` could let one operation's key match another's.
+
+To change the format, for example for a provider with a shorter length limit, register your own `IDownstreamKeyGenerator` before calling `AddIdempotencyGuard`. It receives the provider and operation, so it can vary the format for each.
+
+### Provider Key Lifetimes
+
+A downstream key only protects you while the provider remembers it, and that window is separate from `ResponseTtl`. PayPal Orders v2 keeps keys for 6 hours by default, for example, and Stripe may remove them after 24 hours. Check the docs for each provider you call.
+
+A stored response replays without calling the provider, so the provider's window doesn't matter. If nothing was stored, because of a crash, a released claim or `ShouldStoreResponse` returning `false`, the handler runs again and the downstream key is the only protection. Once the provider has forgotten the key, it treats the call as new and can charge the customer twice.
+
+Changing `ResponseTtl` doesn't close this gap, because it only controls how long stored responses last. Stop clients retrying before the shortest window of any provider the endpoint calls, then check with the provider whether the payment went through.
+
+### Using It as a Payment Reference
+
+`DownstreamKey` also works as a payment reference. It's deterministic, so a retry sends the same reference, and after a timeout you can recompute it to look the payment up.
+
+Some providers reject duplicate references, which can add protection beyond the idempotency key window. Check your provider's rules first, because they vary, and keep these in mind:
+
+- A rejected duplicate is usually an error rather than a replay, so treat it as a signal to look the payment up, not as a failed payment.
+- A declined payment may use up the reference, so a new payment attempt needs a new idempotency key.
+- Two callers sending the same key get the same reference unless you [scope keys](#scoping-keys-to-callers), and the second caller's payment could be rejected.
 
 ## Edge Cases Handled
 
