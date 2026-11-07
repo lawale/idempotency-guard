@@ -211,6 +211,18 @@ public IActionResult CreatePayment(PaymentRequest request) { ... }
 
 Settings merge across a controller and its actions, and the most specific value wins. An action can change a TTL without losing the controller's policy.
 
+A marked endpoint needs a key by default. `Required = false` makes it optional, which is for moving existing clients over to sending keys:
+
+```csharp
+app.MapPost("/payments", CreatePayment).RequireIdempotency(options =>
+{
+    options.Policy = "user";
+    options.Required = false;   // remove once every client sends a key
+});
+```
+
+Requests with a key are fully guarded. Requests without one run the handler with no duplicate protection, because the guard never generates a key: it wouldn't match on a retry. You only need this when the endpoint has its own settings, or under `RequireKey` or `Ignore`. Under the default `GuardWhenKeyPresent`, an unmarked endpoint already treats keys as optional. Set a policy's `KeyScope` from the start of the move, because adding one later changes the endpoint's store keys, so a retry in flight at that moment won't find its stored response.
+
 ### Named Policies
 
 Attributes only accept constants, so anything that needs a delegate lives in a named policy. Anything a policy leaves unset falls back to the global value:

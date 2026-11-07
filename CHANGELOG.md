@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `IdempotencyOptions.UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. `GuardWhenKeyPresent` is the default and matches today's behaviour, and `RequireKey` matches `MissingKeyPolicy.Reject`
 - `UnmarkedEndpointBehavior.Ignore` skips the guard on those requests, even with a key, so a client that sends a key on every request no longer gets their responses stored. With it set, calling `UseRouting()` after `UseIdempotencyGuard()` fails at startup
 
+### Fixed
+- `Required = false` on a controller was overridden by any `[Idempotent]` on its actions that didn't set `Required`, because the action's default of `true` won. It now inherits like every other setting. **Those actions stop returning a 400 for a missing key and start running the handler without one**, as the controller asked. Set `Required = true` on an action to keep the key mandatory
+
 ### Deprecated
 - `IdempotencyOptions.MissingKeyPolicy` and the `MissingKeyPolicy` enum, replaced by `UnmarkedEndpoints`. Both still work until 3.0, but setting them to different behaviours fails at startup
 - `IdempotencyOptions.Enabled`. Call `UseIdempotencyGuard()` conditionally instead
