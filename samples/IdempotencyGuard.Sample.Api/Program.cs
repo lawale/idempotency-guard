@@ -10,7 +10,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.ResponseTtl = TimeSpan.FromHours(24);
     options.ConcurrentRequestPolicy = ConcurrentRequestPolicy.WaitThenReplay;
     options.ConcurrentRequestTimeout = TimeSpan.FromSeconds(30);
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
 
     // Cap request body bytes used for fingerprint hashing (default: 1 MB)

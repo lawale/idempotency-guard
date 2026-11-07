@@ -31,7 +31,7 @@ public class MiddlewareTests : IAsyncLifetime
                 {
                     services.AddIdempotencyGuard(options =>
                     {
-                        options.MissingKeyPolicy = MissingKeyPolicy.Allow;
+                        options.UnmarkedEndpoints = UnmarkedEndpointBehavior.GuardWhenKeyPresent;
                     });
                     services.AddIdempotencyGuardInMemoryStore();
                     services.AddRouting();

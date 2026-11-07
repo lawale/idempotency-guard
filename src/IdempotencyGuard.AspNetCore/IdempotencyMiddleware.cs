@@ -68,20 +68,28 @@ public class IdempotencyMiddleware
         }
 
         var endpoint = httpContext.GetEndpoint();
-        ThrowIfAuthorizationHasNotRun(httpContext, endpoint);
 
         // Read [Idempotent] attributes from endpoint metadata
         var idempotentAttr = endpoint is null
             ? null
             : IdempotentAttribute.Merge(endpoint.Metadata.GetOrderedMetadata<IdempotentAttribute>());
+
+        if (_options.UnmarkedEndpoints == UnmarkedEndpointBehavior.Ignore && idempotentAttr is null)
+        {
+            await _next(httpContext);
+            return;
+        }
+
+        ThrowIfAuthorizationHasNotRun(httpContext, endpoint);
+
         var policy = ResolvePolicy(idempotentAttr);
 
         var rawKey = httpContext.Request.Headers[_options.HeaderName].FirstOrDefault();
 
         if (string.IsNullOrWhiteSpace(rawKey))
         {
-            // Per-endpoint Required override takes precedence, then fall back to global policy
-            var requireKey = idempotentAttr?.Required ?? (_options.MissingKeyPolicy == MissingKeyPolicy.Reject);
+            // A marked endpoint's Required decides, and only unmarked endpoints use the global setting
+            var requireKey = idempotentAttr?.Required ?? (_options.UnmarkedEndpoints == UnmarkedEndpointBehavior.RequireKey);
 
             if (requireKey)
             {
@@ -191,7 +199,9 @@ public class IdempotencyMiddleware
         requestActivity?.SetTag("idempotency.result", resultTag);
     }
 
+#pragma warning disable IDEMP001 // Still honoured until it's removed in 3.0
     private bool IsEnabled(HttpContext httpContext) => _options.Enabled && _options.EnforcedMethods.Contains(httpContext.Request.Method, StringComparer.OrdinalIgnoreCase);
+#pragma warning restore IDEMP001
 
     private bool IsValidKey(string rawKey) =>
         (_options.MaxKeyLength <= 0 || rawKey.Length <= _options.MaxKeyLength)

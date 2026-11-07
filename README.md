@@ -41,7 +41,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.HeaderName = "Idempotency-Key";
     options.ClaimTtl = TimeSpan.FromMinutes(5);
     options.ResponseTtl = TimeSpan.FromHours(24);
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
 });
 
 // Register a store (pick one)
@@ -123,8 +123,8 @@ builder.Services.AddIdempotencyGuard(options =>
     options.ConcurrentRequestPolicy = ConcurrentRequestPolicy.WaitThenReplay;
     options.ConcurrentRequestTimeout = TimeSpan.FromSeconds(30);
 
-    // Behaviour when no idempotency key is provided
-    options.MissingKeyPolicy = MissingKeyPolicy.Allow; // or Reject
+    // What happens on endpoints without [Idempotent] or RequireIdempotency()
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.GuardWhenKeyPresent; // or RequireKey, Ignore
 
     // Which HTTP methods require idempotency (default: POST, PUT, PATCH)
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
@@ -151,13 +151,41 @@ builder.Services.AddIdempotencyGuard(options =>
     // Useful for namespacing by environment or tenant.
     options.KeyPrefix = "production:";
 
-    // Disable for testing
-    options.Enabled = true;
-
     // Programmatic route-level opt-in/opt-out
     options.EndpointFilter = (method, path) => path.StartsWith("/api/");
 });
 ```
+
+### Choosing Which Endpoints Are Guarded
+
+`UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. A marked endpoint is unaffected, and its `Required` setting (default `true`) decides whether it needs a key.
+
+| `UnmarkedEndpoints` | Unmarked endpoint, key sent | Unmarked endpoint, no key |
+|---|---|---|
+| `GuardWhenKeyPresent` (default) | Guarded | Passes through |
+| `RequireKey` | Guarded | 400, and that includes routes that don't exist |
+| `Ignore` | Passes through, nothing stored | Passes through |
+
+So what a marker does depends on this setting:
+
+| `UnmarkedEndpoints` | What marking an endpoint adds |
+|---|---|
+| `GuardWhenKeyPresent` | Its own settings, and makes the key mandatory |
+| `RequireKey` | Its own settings, and `Required = false` makes the key optional |
+| `Ignore` | Turns the guard on for that endpoint, as well as its own settings |
+
+Under the first two, a client that sends a key on every request, say from a shared HTTP interceptor, has responses from unmarked endpoints stored and replayed too. A key reused across endpoints gets a 422, and even a request to a route that doesn't exist has its 404 stored. `Ignore` stops that:
+
+```csharp
+options.UnmarkedEndpoints = UnmarkedEndpointBehavior.Ignore;
+
+app.MapPost("/payments", CreatePayment).RequireIdempotency();  // guarded
+app.MapPost("/search", Search);                                // key ignored, nothing stored
+```
+
+With `Ignore`, routing has to run before the guard, or no endpoint looks marked. `WebApplication` does this for you. If you call `UseRouting()` yourself, call it first, because calling it after `UseIdempotencyGuard()` fails at startup.
+
+Before turning it on for an existing API, check that every endpoint you rely on is marked. An unmarked one loses its duplicate protection, and nothing reports that.
 
 ### Per-Endpoint Configuration
 
@@ -598,6 +626,16 @@ builder.Services.AddHealthChecks()
 ## Upgrading
 
 See the [2.0 upgrade guide](docs/upgrading-to-2.0.md). Some of its changes can affect a live system during the rollout.
+
+Two settings are deprecated and will be removed in 3.0. Using either gives a build warning with the ID `IDEMP001`, which is an error under `TreatWarningsAsErrors`. Add `<NoWarn>$(NoWarn);IDEMP001</NoWarn>` to your project if you can't move yet.
+
+| Deprecated | Use instead |
+|---|---|
+| `MissingKeyPolicy.Allow` | `UnmarkedEndpoints = UnmarkedEndpointBehavior.GuardWhenKeyPresent` |
+| `MissingKeyPolicy.Reject` | `UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey` |
+| `Enabled = false` | Don't call `UseIdempotencyGuard()` |
+
+Setting `MissingKeyPolicy` and `UnmarkedEndpoints` to different behaviours fails at startup.
 
 ## Stability and Performance
 

@@ -186,6 +186,24 @@ public class StartupValidationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Route_warning_skips_unmarked_routes_when_they_are_ignored()
+    {
+        await StartAsync("Development", options =>
+        {
+            options.AddPolicy("user", p => p.KeyScope = _ => "x");
+            options.UnmarkedEndpoints = UnmarkedEndpointBehavior.Ignore;
+        }, endpoints =>
+        {
+            ScopedAndOpen(endpoints);
+            endpoints.MapPost("/marked-unscoped", Handle).RequireIdempotency();
+        });
+
+        var warning = _logs.Warnings.Should().ContainSingle().Subject;
+        warning.Should().Contain("/marked-unscoped");
+        warning.Should().NotContain("/open").And.NotContain("/any");
+    }
+
+    [Fact]
     public async Task No_route_warning_when_validation_is_off()
     {
         await StartAsync("Production", options =>

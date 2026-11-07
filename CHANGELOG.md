@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- `IdempotencyOptions.UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. `GuardWhenKeyPresent` is the default and matches today's behaviour, and `RequireKey` matches `MissingKeyPolicy.Reject`
+- `UnmarkedEndpointBehavior.Ignore` skips the guard on those requests, even with a key, so a client that sends a key on every request no longer gets their responses stored. With it set, calling `UseRouting()` after `UseIdempotencyGuard()` fails at startup
+
+### Deprecated
+- `IdempotencyOptions.MissingKeyPolicy` and the `MissingKeyPolicy` enum, replaced by `UnmarkedEndpoints`. Both still work until 3.0, but setting them to different behaviours fails at startup
+- `IdempotencyOptions.Enabled`. Call `UseIdempotencyGuard()` conditionally instead
+- These give a build warning with the ID `IDEMP001`, **which fails the build under `TreatWarningsAsErrors`**. Add `IDEMP001` to `NoWarn` if you can't move yet
+
 ## [2.0.0] - 2026-11-05
 **Breaking release. See the [2.0 upgrade guide](docs/upgrading-to-2.0.md); some of these changes can affect a live system during the rollout.**
 

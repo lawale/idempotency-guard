@@ -290,7 +290,7 @@ public abstract class MiddlewareStressTests
                         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Warning));
                         services.AddIdempotencyGuard(options =>
                         {
-                            options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+                            options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
                             options.ClaimTtl = TimeSpan.FromMinutes(5);
                             options.ResponseTtl = TimeSpan.FromMinutes(30);
                             options.Cleanup.Enabled = false;

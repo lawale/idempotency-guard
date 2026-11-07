@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddIdempotencyGuard(options =>
 {
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
 });
 
 builder.Services.AddIdempotencyGuardRedisStore("localhost:6379");

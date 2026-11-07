@@ -35,6 +35,7 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
     public Task StartedAsync(CancellationToken cancellationToken)
     {
         ThrowIfKeyPrefixIsTooLong();
+        ThrowIfUnmarkedEndpointSettingsConflict();
         WarnIfKeysAreUnscoped();
 
         if (_options.ValidateEndpointsOnStartup ?? _environment.IsDevelopment())
@@ -55,6 +56,16 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
             throw new InvalidOperationException(
                 $"IdempotencyOptions.KeyPrefix is {_options.KeyPrefix.Length} characters, " +
                 $"over the limit of {IdempotencyStoreKey.MaxPrefixLength}.");
+        }
+    }
+
+    private void ThrowIfUnmarkedEndpointSettingsConflict()
+    {
+        if (_options.UnmarkedEndpointSettingsConflict)
+        {
+            throw new InvalidOperationException(
+                "IdempotencyOptions.MissingKeyPolicy and UnmarkedEndpoints ask for different behaviour. " +
+                "MissingKeyPolicy is deprecated, so set only UnmarkedEndpoints.");
         }
     }
 
@@ -124,6 +135,11 @@ internal sealed class IdempotencyStartupValidator : IHostedLifecycleService
         }
 
         var attribute = IdempotentAttribute.Merge(endpoint.Metadata.GetOrderedMetadata<IdempotentAttribute>());
+        if (_options.UnmarkedEndpoints == UnmarkedEndpointBehavior.Ignore && attribute is null)
+        {
+            return false;
+        }
+
         return attribute?.Policy is not { } name
             || !_options.TryGetPolicy(name, out var policy)
             || policy!.KeyScope is null;
