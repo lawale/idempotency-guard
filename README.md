@@ -408,7 +408,7 @@ It's off by default in production because of the cost. Reading the endpoints mak
 
 With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
 
-It also warns about marked endpoints whose methods aren't in `EnforcedMethods`, because the guard skips those. A `[Idempotent]` `DELETE` is a common example. `GET`, `HEAD`, `OPTIONS` and `TRACE` are left out, since `[Idempotent]` on a controller marks its read actions too. And it fails if an endpoint sets `FingerprintProperties` while `MaxFingerprintBodySize` is 0, because the body is never read and a changed payload goes undetected. A custom `IFingerprintBuilder` is exempt from that one.
+It also warns about marked endpoints whose methods aren't in `EnforcedMethods`, because the guard skips those. A `[Idempotent]` `DELETE` is a common example. `GET`, `HEAD`, `OPTIONS` and `TRACE` are left out, since `[Idempotent]` on a controller marks its read actions too. And it fails if an endpoint sets `FingerprintProperties` while `MaxFingerprintBodySize` is 0, because the body is never read and a changed payload goes undetected. A custom `IFingerprintBuilder` is exempt from that one. Without validation, the default builder still catches it: each request to that endpoint fails with an `InvalidOperationException` before anything is stored or the handler runs.
 
 The checks on option values don't read endpoints, so they always run, and the app fails to start if any of them fails:
 

@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - **Invalid option values now fail at startup, so an app with one of these stops starting after upgrading.** This covers zero or negative `ClaimTtl`, `ResponseTtl`, `MaxResponseBodySize`, `Cleanup.Interval`, `Cleanup.BatchSize` and `Cleanup.MaxIterationsPerSweep`, an empty `HeaderName` or `ReplayedHeaderName`, and a null `EnforcedMethods` or `Cleanup`. These were never working: a zero `ResponseTtl`, for example, silently removed duplicate protection, and a negative `Cleanup.Interval` shut the app down
-- With endpoint validation on, setting `FingerprintProperties` while `MaxFingerprintBodySize` is 0 fails at startup when the default fingerprint builder is in use. The body was never read, so a retry with a changed payload replayed the first response instead of getting a 422
+- Setting `FingerprintProperties` while `MaxFingerprintBodySize` is 0 is now an error when the default fingerprint builder is in use. The body was never read, so a retry with a changed payload replayed the first response instead of getting a 422. With endpoint validation on it fails at startup. **With it off, each request to that endpoint fails with an `InvalidOperationException` before the handler runs**
 - With endpoint validation on, a warning names marked routes whose non-read methods aren't in `EnforcedMethods`, because the guard skips them
 
 ### Deprecated

@@ -339,11 +339,26 @@ public class StartupValidationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Fingerprint_properties_check_needs_endpoint_validation()
+    public async Task Fingerprint_properties_without_a_body_to_read_fail_each_request_when_not_validated()
     {
-        var start = () => StartAsync("Production", options => options.MaxFingerprintBodySize = 0, MarkedWithFingerprintProperties);
+        var client = await StartAsync("Production", options => options.MaxFingerprintBodySize = 0, MarkedWithFingerprintProperties);
 
-        await start.Should().NotThrowAsync();
+        var send = () => client.SendAsync(Post("/selective"));
+
+        (await send.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*MaxFingerprintBodySize*");
+        _handled.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Fingerprint_properties_without_a_body_to_read_work_with_a_custom_builder_when_not_validated()
+    {
+        var client = await StartAsync("Production", options => options.MaxFingerprintBodySize = 0, MarkedWithFingerprintProperties,
+            services => services.AddSingleton<IFingerprintBuilder, CustomFingerprintBuilder>());
+
+        var response = await client.SendAsync(Post("/selective"));
+
+        response.IsSuccessStatusCode.Should().BeTrue();
+        _handled.Should().BeTrue();
     }
 
     [Fact]
