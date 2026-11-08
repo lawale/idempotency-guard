@@ -4,7 +4,8 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-08
+**Three changes can stop a working app after upgrading: invalid option values now fail at startup, `IDEMP001` deprecation warnings fail builds that treat warnings as errors, and actions under a controller with `Required = false` no longer return a 400 for a missing key. Each is described below.**
 
 ### Added
 - `IdempotencyOptions.UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. `GuardWhenKeyPresent` is the default and matches today's behaviour, and `RequireKey` matches `MissingKeyPolicy.Reject`
