@@ -308,6 +308,42 @@ public class PolicyAndScopeTests : IAsyncLifetime
         merged.Required.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("/required-false-then-unset", HttpStatusCode.Created)]
+    [InlineData("/required-false-then-true", HttpStatusCode.BadRequest)]
+    [InlineData("/unset-then-required-false", HttpStatusCode.Created)]
+    [InlineData("/unset-then-unset", HttpStatusCode.BadRequest)]
+    public async Task Required_comes_from_the_most_specific_attribute_that_sets_it(string path, HttpStatusCode expected)
+    {
+        var client = await StartAsync(_ => { });
+        var request = Post(path, NewKey());
+        request.Headers.Remove("Idempotency-Key");
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Required_defaults_to_true_when_no_attribute_sets_it()
+    {
+        new IdempotentAttribute().Required.Should().BeTrue();
+        IdempotentAttribute.Merge([new IdempotentAttribute(), new IdempotentAttribute()])!.Required.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Required_set_with_attribute_syntax_is_inherited_by_an_action()
+    {
+        var controller = typeof(KeyOptionalController).GetCustomAttributes(typeof(IdempotentAttribute), false);
+        var action = typeof(KeyOptionalController).GetMethod(nameof(KeyOptionalController.Create))!
+            .GetCustomAttributes(typeof(IdempotentAttribute), false);
+
+        var merged = IdempotentAttribute.Merge([.. controller.Concat(action).Cast<IdempotentAttribute>()]);
+
+        merged!.Required.Should().BeFalse();
+        merged.ResponseTtlSeconds.Should().Be(60);
+    }
+
     [Fact]
     public async Task Unknown_policy_name_fails_startup_and_names_the_endpoint()
     {
@@ -379,6 +415,18 @@ public class PolicyAndScopeTests : IAsyncLifetime
                         endpoints.MapPost("/service", CreatedAsync).RequireIdempotency(o => o.Policy = "service");
                         endpoints.MapPost("/fails-once", FailsOnceAsync);
                         endpoints.MapPost("/fails-once-cache-all", FailsOnceAsync).RequireIdempotency(o => o.Policy = "cache-all");
+                        endpoints.MapPost("/required-false-then-unset", CreatedAsync)
+                            .WithMetadata(new IdempotentAttribute { Required = false })
+                            .WithMetadata(new IdempotentAttribute { ResponseTtlSeconds = 60 });
+                        endpoints.MapPost("/required-false-then-true", CreatedAsync)
+                            .WithMetadata(new IdempotentAttribute { Required = false })
+                            .WithMetadata(new IdempotentAttribute { Required = true });
+                        endpoints.MapPost("/unset-then-required-false", CreatedAsync)
+                            .WithMetadata(new IdempotentAttribute { ResponseTtlSeconds = 60 })
+                            .WithMetadata(new IdempotentAttribute { Required = false });
+                        endpoints.MapPost("/unset-then-unset", CreatedAsync)
+                            .WithMetadata(new IdempotentAttribute { ClaimTtlSeconds = 60 })
+                            .WithMetadata(new IdempotentAttribute { ResponseTtlSeconds = 60 });
                         endpoints.MapPost("/controller-and-action", CreatedAsync)
                             .WithMetadata(new IdempotentAttribute { Policy = "user" })
                             .WithMetadata(new IdempotentAttribute { ResponseTtlSeconds = 60 });
@@ -416,6 +464,13 @@ public class PolicyAndScopeTests : IAsyncLifetime
     }
 
     private static string NewKey() => $"policy-{Guid.NewGuid():N}";
+
+    [Idempotent(Required = false)]
+    private sealed class KeyOptionalController
+    {
+        [Idempotent(ResponseTtlSeconds = 60)]
+        public void Create() { }
+    }
 
     private static HttpRequestMessage Post(string path, string key, string? caller = null)
     {

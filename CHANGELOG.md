@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- `IdempotencyOptions.UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. `GuardWhenKeyPresent` is the default and matches today's behaviour, and `RequireKey` matches `MissingKeyPolicy.Reject`
+- `UnmarkedEndpointBehavior.Ignore` skips the guard on those requests, even with a key, so a client that sends a key on every request no longer gets their responses stored. With it set, calling `UseRouting()` after `UseIdempotencyGuard()` fails at startup
+
+### Fixed
+- `Required = false` on a controller was overridden by any `[Idempotent]` on its actions that didn't set `Required`, because the action's default of `true` won. It now inherits like every other setting. **Those actions stop returning a 400 for a missing key and start running the handler without one**, as the controller asked. Set `Required = true` on an action to keep the key mandatory
+
+### Changed
+- **Invalid option values now fail at startup, so an app with one of these stops starting after upgrading.** This covers zero or negative `ClaimTtl`, `ResponseTtl`, `MaxResponseBodySize`, `Cleanup.Interval`, `Cleanup.BatchSize` and `Cleanup.MaxIterationsPerSweep`, an empty `HeaderName` or `ReplayedHeaderName`, and a null `EnforcedMethods` or `Cleanup`. These were never working: a zero `ResponseTtl`, for example, silently removed duplicate protection, and a negative `Cleanup.Interval` shut the app down
+- Setting `FingerprintProperties` while `MaxFingerprintBodySize` is 0 is now an error when the default fingerprint builder is in use. The body was never read, so a retry with a changed payload replayed the first response instead of getting a 422. With endpoint validation on it fails at startup. **With it off, each request to that endpoint fails with an `InvalidOperationException` before the handler runs**
+- With endpoint validation on, a warning names marked routes whose non-read methods aren't in `EnforcedMethods`, because the guard skips them
+
+### Deprecated
+- `IdempotencyOptions.MissingKeyPolicy` and the `MissingKeyPolicy` enum, replaced by `UnmarkedEndpoints`. Both still work until 3.0, but setting them to different behaviours fails at startup
+- `IdempotencyOptions.Enabled`. Call `UseIdempotencyGuard()` conditionally instead
+- These give a build warning with the ID `IDEMP001`, **which fails the build under `TreatWarningsAsErrors`**. Add `IDEMP001` to `NoWarn` if you can't move yet
+
 ## [2.0.0] - 2026-11-05
 **Breaking release. See the [2.0 upgrade guide](docs/upgrading-to-2.0.md); some of these changes can affect a live system during the rollout.**
 

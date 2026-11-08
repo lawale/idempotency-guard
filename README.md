@@ -41,7 +41,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.HeaderName = "Idempotency-Key";
     options.ClaimTtl = TimeSpan.FromMinutes(5);
     options.ResponseTtl = TimeSpan.FromHours(24);
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
 });
 
 // Register a store (pick one)
@@ -141,8 +141,8 @@ builder.Services.AddIdempotencyGuard(options =>
     options.ConcurrentRequestPolicy = ConcurrentRequestPolicy.WaitThenReplay;
     options.ConcurrentRequestTimeout = TimeSpan.FromSeconds(30);
 
-    // Behaviour when no idempotency key is provided
-    options.MissingKeyPolicy = MissingKeyPolicy.Allow; // or Reject
+    // What happens on endpoints without [Idempotent] or RequireIdempotency()
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.GuardWhenKeyPresent; // or RequireKey, Ignore
 
     // Which HTTP methods require idempotency (default: POST, PUT, PATCH)
     options.EnforcedMethods = ["POST", "PUT", "PATCH"];
@@ -153,7 +153,8 @@ builder.Services.AddIdempotencyGuard(options =>
 
     // Maximum request body bytes used for fingerprint hashing (default: 1 MB)
     // Bodies larger than this are fingerprinted using only the first N bytes.
-    // Set to 0 to skip body hashing entirely.
+    // Set to 0 to stop reading the body: a reused key with a different payload then replays.
+    // Endpoints with FingerprintProperties need the body, so they fail with 0.
     options.MaxFingerprintBodySize = 1_048_576;
 
     // Longest key accepted from a client (default: 1024). Longer keys get a 400. Set to 0 to disable.
@@ -169,13 +170,42 @@ builder.Services.AddIdempotencyGuard(options =>
     // Useful for namespacing by environment or tenant.
     options.KeyPrefix = "production:";
 
-    // Disable for testing
-    options.Enabled = true;
-
-    // Programmatic route-level opt-in/opt-out
-    options.EndpointFilter = (method, path) => path.StartsWith("/api/");
+    // Skip the guard by method and path. Returning false skips it even on marked endpoints.
+    // The path leaves out PathBase, so after UsePathBase("/api") this sees "/orders", not "/api/orders".
+    options.EndpointFilter = (method, path) => path.StartsWithSegments("/orders");
 });
 ```
+
+### Choosing Which Endpoints Are Guarded
+
+`UnmarkedEndpoints` decides what happens on endpoints without `[Idempotent]` or `RequireIdempotency()`, and on requests that match no route. A marked endpoint is unaffected, and its `Required` setting (default `true`) decides whether it needs a key.
+
+| `UnmarkedEndpoints` | Unmarked endpoint, key sent | Unmarked endpoint, no key |
+|---|---|---|
+| `GuardWhenKeyPresent` (default) | Guarded | Passes through |
+| `RequireKey` | Guarded | 400, and that includes routes that don't exist |
+| `Ignore` | Passes through, nothing stored | Passes through |
+
+So what a marker does depends on this setting:
+
+| `UnmarkedEndpoints` | What marking an endpoint adds |
+|---|---|
+| `GuardWhenKeyPresent` | Its own settings, and makes the key mandatory |
+| `RequireKey` | Its own settings, and `Required = false` makes the key optional |
+| `Ignore` | Turns the guard on for that endpoint, as well as its own settings |
+
+Under the first two, a client that sends a key on every request, say from a shared HTTP interceptor, has responses from unmarked endpoints stored and replayed too. A key reused across endpoints gets a 422, and even a request to a route that doesn't exist has its 404 stored. `Ignore` stops that:
+
+```csharp
+options.UnmarkedEndpoints = UnmarkedEndpointBehavior.Ignore;
+
+app.MapPost("/payments", CreatePayment).RequireIdempotency();  // guarded
+app.MapPost("/search", Search);                                // key ignored, nothing stored
+```
+
+With `Ignore`, routing has to run before the guard, or no endpoint looks marked. `WebApplication` does this for you. If you call `UseRouting()` yourself, call it first, because calling it after `UseIdempotencyGuard()` fails at startup.
+
+Before turning it on for an existing API, check that every endpoint you rely on is marked. An unmarked one loses its duplicate protection, and nothing reports that.
 
 ### Per-Endpoint Configuration
 
@@ -200,6 +230,18 @@ public IActionResult CreatePayment(PaymentRequest request) { ... }
 ```
 
 Settings merge across a controller and its actions, and the most specific value wins. An action can change a TTL without losing the controller's policy.
+
+A marked endpoint needs a key by default. `Required = false` makes it optional, which is for moving existing clients over to sending keys:
+
+```csharp
+app.MapPost("/payments", CreatePayment).RequireIdempotency(options =>
+{
+    options.Policy = "user";
+    options.Required = false;   // remove once every client sends a key
+});
+```
+
+Requests with a key are fully guarded. Requests without one run the handler with no duplicate protection, because the guard never generates a key: it wouldn't match on a retry. You only need this when the endpoint has its own settings, or under `RequireKey` or `Ignore`. Under the default `GuardWhenKeyPresent`, an unmarked endpoint already treats keys as optional. Set a policy's `KeyScope` from the start of the move, because adding one later changes the endpoint's store keys, so a retry in flight at that moment won't find its stored response.
 
 ### Named Policies
 
@@ -303,7 +345,8 @@ builder.Services.AddIdempotencyGuard(options =>
     options.HeaderDenyList = ["X-Request-Id", "X-Correlation-Id"];
 
     // OR: use an allow list — ONLY these headers will be stored and replayed.
-    // When set, HeaderDenyList and the built-in defaults are ignored entirely.
+    // When it has entries, HeaderDenyList and the built-in defaults are ignored entirely.
+    // An empty allow list counts as not set.
     options.HeaderAllowList = ["Content-Type", "Location", "X-Custom-Header"];
 });
 ```
@@ -384,7 +427,21 @@ It's off by default in production because of the cost. Reading the endpoints mak
 
 With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
 
-`KeyPrefix` length and the warning about having no scope at all don't read endpoints, so they always run.
+It also warns about marked endpoints whose methods aren't in `EnforcedMethods`, because the guard skips those. A `[Idempotent]` `DELETE` is a common example. `GET`, `HEAD`, `OPTIONS` and `TRACE` are left out, since `[Idempotent]` on a controller marks its read actions too. And it fails if an endpoint sets `FingerprintProperties` while `MaxFingerprintBodySize` is 0, because the body is never read and a changed payload goes undetected. A custom `IFingerprintBuilder` is exempt from that one. Without validation, the default builder still catches it: each request to that endpoint fails with an `InvalidOperationException` before anything is stored or the handler runs.
+
+The checks on option values don't read endpoints, so they always run, and the app fails to start if any of them fails:
+
+| Setting | Must be |
+|---|---|
+| `ClaimTtl`, `ResponseTtl` | Greater than zero. At zero, the same key runs the handler again |
+| `MaxResponseBodySize` | Greater than zero. At zero, every retry gets a 410 |
+| `HeaderName`, `ReplayedHeaderName` | Not empty |
+| `EnforcedMethods` | Not null |
+| `Cleanup`, `Cleanup.Interval`, `Cleanup.BatchSize`, `Cleanup.MaxIterationsPerSweep` | Not null, and greater than zero |
+| `KeyPrefix` | Within the length limit |
+| `MissingKeyPolicy` and `UnmarkedEndpoints` | Not set to different behaviours |
+
+The warning about having no scope at all doesn't read endpoints either, so it always runs.
 
 ## Key Prefixing
 
@@ -407,6 +464,8 @@ app.Use(async (context, next) =>
 ```
 
 The prefix is limited to 128 characters. End it with a delimiter, as above. Without one, `tenant-1` with the key `2abc` and `tenant-12` with the key `abc` get the same downstream key. Prefixes can't protect tenants from each other on their own, so scope keys as well if callers aren't trusted.
+
+A store with its own prefix adds it in front. The Redis store's `KeyPrefix` defaults to `idempotency:`, so with `options.KeyPrefix = "prod:"` its keys start with `idempotency:prod:`.
 
 ## Store Keys
 
@@ -636,6 +695,16 @@ builder.Services.AddHealthChecks()
 ## Upgrading
 
 See the [2.0 upgrade guide](docs/upgrading-to-2.0.md). Some of its changes can affect a live system during the rollout.
+
+Two settings are deprecated and will be removed in 3.0. Using either gives a build warning with the ID `IDEMP001`, which is an error under `TreatWarningsAsErrors`. Add `<NoWarn>$(NoWarn);IDEMP001</NoWarn>` to your project if you can't move yet.
+
+| Deprecated | Use instead |
+|---|---|
+| `MissingKeyPolicy.Allow` | `UnmarkedEndpoints = UnmarkedEndpointBehavior.GuardWhenKeyPresent` |
+| `MissingKeyPolicy.Reject` | `UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey` |
+| `Enabled = false` | Don't call `UseIdempotencyGuard()` |
+
+Setting `MissingKeyPolicy` and `UnmarkedEndpoints` to different behaviours fails at startup.
 
 ## Stability and Performance
 

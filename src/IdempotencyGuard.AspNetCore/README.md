@@ -25,7 +25,7 @@ builder.Services.AddIdempotencyGuard(options =>
     options.HeaderName = "Idempotency-Key";
     options.ClaimTtl = TimeSpan.FromMinutes(5);
     options.ResponseTtl = TimeSpan.FromHours(24);
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
 });
 
 builder.Services.AddIdempotencyGuardInMemoryStore(); // Use Redis/SQL in production
@@ -49,6 +49,16 @@ Request with Idempotency-Key header
     +-- Different body  --> Return 422 (fingerprint mismatch)
     +-- Processing fail --> Release claim for retry
 ```
+
+## Choosing Which Endpoints Are Guarded
+
+`UnmarkedEndpoints` decides what happens on endpoints without `RequireIdempotency()` or `[Idempotent]`, and on requests that match no route:
+
+- `GuardWhenKeyPresent` (default): a request with a key is guarded, and one without passes through.
+- `RequireKey`: a request without a key gets a 400, and one with a key is guarded.
+- `Ignore`: the guard skips the request, even with a key. `UseRouting()`, if you call it, must come before `UseIdempotencyGuard()`.
+
+`MissingKeyPolicy` and `Enabled` are deprecated and will be removed in 3.0, and using them gives a build warning, `IDEMP001`.
 
 ## Per-Endpoint Configuration
 

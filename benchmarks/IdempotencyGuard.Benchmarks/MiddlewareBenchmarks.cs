@@ -97,7 +97,7 @@ public class MiddlewareBenchmarks
                     {
                         services.AddIdempotencyGuard(options =>
                         {
-                            options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+                            options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
                             options.Cleanup.Enabled = false;
                         });
                         services.AddSingleton(store);

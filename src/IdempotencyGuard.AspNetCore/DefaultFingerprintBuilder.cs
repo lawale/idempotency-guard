@@ -26,6 +26,16 @@ public class DefaultFingerprintBuilder : IFingerprintBuilder
     public async Task<FingerprintResult> ComputeAsync(
         HttpContext context, IdempotentAttribute? attribute)
     {
+        if (attribute?.FingerprintProperties is { Length: > 0 } && _options.MaxFingerprintBodySize <= 0)
+        {
+            // Without the body there are no properties to compare, so a retry with a changed
+            // payload would replay the first response. Fail before anything is claimed.
+            throw new InvalidOperationException(
+                $"The endpoint sets {nameof(IdempotentAttribute.FingerprintProperties)}, but " +
+                $"{nameof(IdempotencyOptions)}.{nameof(IdempotencyOptions.MaxFingerprintBodySize)} is " +
+                $"{_options.MaxFingerprintBodySize}, so the request body is never read. Set it above 0.");
+        }
+
         var fingerprintBody = _options.MaxFingerprintBodySize > 0
             ? await ReadRequestBodyAsync(context.Request, _options.MaxFingerprintBodySize)
             : null;

@@ -4,7 +4,14 @@ namespace IdempotencyGuard;
 
 public class IdempotencyOptions
 {
+    private const string DeprecationDiagnosticId = "IDEMP001";
+
     private readonly Dictionary<string, IdempotencyPolicy> _policies = new(StringComparer.Ordinal);
+
+    // Both nullable so that setting both properties to different values can be told apart
+    // from leaving one at its default. They can collapse into one property in 3.0.
+    private UnmarkedEndpointBehavior? _unmarkedEndpoints;
+    private UnmarkedEndpointBehavior? _missingKeyPolicy;
 
     public string HeaderName { get; set; } = "Idempotency-Key";
 
@@ -23,7 +30,37 @@ public class IdempotencyOptions
 
     public TimeSpan ConcurrentRequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
-    public MissingKeyPolicy MissingKeyPolicy { get; set; } = MissingKeyPolicy.Allow;
+    /// <summary>
+    /// What the guard does with a request to an endpoint not marked with
+    /// <see cref="AspNetCore.IdempotentAttribute"/> or <c>RequireIdempotency()</c>. A request
+    /// that matches no route counts as unmarked. Marked endpoints don't use this setting: their
+    /// <see cref="AspNetCore.IdempotentAttribute.Required"/> decides whether they need a key.
+    /// This is a single global setting, unrelated to the named policies from <see cref="AddPolicy"/>.
+    /// Default: <see cref="UnmarkedEndpointBehavior.GuardWhenKeyPresent"/>.
+    /// </summary>
+    public UnmarkedEndpointBehavior UnmarkedEndpoints
+    {
+        get => _unmarkedEndpoints ?? _missingKeyPolicy ?? UnmarkedEndpointBehavior.GuardWhenKeyPresent;
+        set => _unmarkedEndpoints = value;
+    }
+
+    /// <summary>
+    /// Deprecated. <see cref="MissingKeyPolicy.Allow"/> is now
+    /// <see cref="UnmarkedEndpointBehavior.GuardWhenKeyPresent"/> and
+    /// <see cref="MissingKeyPolicy.Reject"/> is <see cref="UnmarkedEndpointBehavior.RequireKey"/>.
+    /// Setting this and <see cref="UnmarkedEndpoints"/> to different behaviours fails at startup.
+    /// </summary>
+    [Obsolete("Use UnmarkedEndpoints: Allow is GuardWhenKeyPresent and Reject is RequireKey. This will be removed in 3.0.", DiagnosticId = DeprecationDiagnosticId)]
+    public MissingKeyPolicy MissingKeyPolicy
+    {
+        get => UnmarkedEndpoints == UnmarkedEndpointBehavior.RequireKey ? MissingKeyPolicy.Reject : MissingKeyPolicy.Allow;
+        set => _missingKeyPolicy = value == MissingKeyPolicy.Reject
+            ? UnmarkedEndpointBehavior.RequireKey
+            : UnmarkedEndpointBehavior.GuardWhenKeyPresent;
+    }
+
+    internal bool UnmarkedEndpointSettingsConflict =>
+        _unmarkedEndpoints is not null && _missingKeyPolicy is not null && _unmarkedEndpoints != _missingKeyPolicy;
 
     public HashSet<string> EnforcedMethods { get; set; } = ["POST", "PUT", "PATCH"];
 
@@ -42,9 +79,18 @@ public class IdempotencyOptions
     public OversizedResponseBehavior OversizedResponse { get; set; } = OversizedResponseBehavior.RejectRetries;
 
     /// <summary>
-    /// Maximum number of request body bytes used for fingerprint hashing.
-    /// Bodies larger than this are fingerprinted using only the first N bytes.
-    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read.
+    /// Maximum number of request body bytes used for fingerprint hashing. Default: 1 MB.
+    /// Bodies larger than this are fingerprinted using only the first N bytes. On an endpoint
+    /// with <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>, those bytes aren't
+    /// valid JSON, so the properties can't be picked out and the truncated bytes are hashed instead.
+    /// <para>
+    /// Set to 0 or less to stop reading the body. Only the method, path and any extra fingerprint
+    /// segments are hashed, so a key reused with a different payload replays the first response.
+    /// The default fingerprint builder refuses this on an endpoint with
+    /// <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>: endpoint validation
+    /// fails at startup, and without validation each request to that endpoint fails with an
+    /// <see cref="InvalidOperationException"/> before anything is stored or the handler runs.
+    /// </para>
     /// </summary>
     public int MaxFingerprintBodySize { get; set; } = 1_048_576;
 
@@ -54,7 +100,8 @@ public class IdempotencyOptions
     /// It stays readable in the store, ahead of the digest, so prefix scans still work. Limited to
     /// <see cref="IdempotencyStoreKey.MaxPrefixLength"/> characters. End it with a delimiter, or
     /// <c>tenant-1</c> with key <c>2abc</c> gets the same downstream key as <c>tenant-12</c> with <c>abc</c>.
-    /// Default: <c>null</c> (no prefix). Applied across all store implementations.
+    /// Default: <c>null</c> (no prefix). Applied across all store implementations. A store's own
+    /// prefix, such as the Redis store's <c>KeyPrefix</c>, is added in front of this one.
     /// </summary>
     public string? KeyPrefix { get; set; }
 
@@ -149,8 +196,22 @@ public class IdempotencyOptions
 
     internal bool AnyPolicyDefinesKeyScope => _policies.Values.Any(policy => policy.KeyScope is not null);
 
+    /// <summary>
+    /// Deprecated. This is read once at startup, so call <c>UseIdempotencyGuard()</c>
+    /// conditionally instead, which has the same effect and is visible in the pipeline.
+    /// </summary>
+    [Obsolete("Call UseIdempotencyGuard() conditionally instead. This will be removed in 3.0.", DiagnosticId = DeprecationDiagnosticId)]
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Decides by method and path whether a request goes through the guard. Returning <c>false</c>
+    /// skips the guard, even on an endpoint marked with <see cref="IdempotentAttribute"/> or
+    /// <c>RequireIdempotency()</c>. It runs before the endpoint is looked at, on every request
+    /// whose method is in <see cref="EnforcedMethods"/>. The path is
+    /// <see cref="HttpRequest.Path"/>, which leaves out <see cref="HttpRequest.PathBase"/>: after
+    /// <c>UsePathBase("/api")</c>, a request to <c>/api/orders</c> arrives as <c>/orders</c>.
+    /// Default: <c>null</c> (no filter).
+    /// </summary>
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
 
     /// <summary>
@@ -162,14 +223,15 @@ public class IdempotencyOptions
 
     /// <summary>
     /// Additional response headers to exclude from storage beyond the built-in defaults
-    /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> is set.
+    /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> has any entries.
     /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderDenyList { get; set; }
 
     /// <summary>
-    /// If set, ONLY these response headers will be stored and replayed.
+    /// If set and not empty, ONLY these response headers will be stored and replayed.
     /// Overrides <see cref="HeaderDenyList"/> and the built-in defaults entirely.
+    /// An empty set counts as not set, so the deny lists apply.
     /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderAllowList { get; set; }
@@ -256,6 +318,32 @@ public enum ConcurrentRequestPolicy
     ReturnConflict
 }
 
+/// <summary>
+/// What the guard does with a request to an endpoint that isn't marked as idempotent.
+/// </summary>
+public enum UnmarkedEndpointBehavior
+{
+    /// <summary>
+    /// A request with a key is guarded, and one without a key passes through.
+    /// </summary>
+    GuardWhenKeyPresent,
+
+    /// <summary>
+    /// A request without a key gets a 400, including one that matches no route, which would
+    /// otherwise be a 404. A request with a key is guarded.
+    /// </summary>
+    RequireKey,
+
+    /// <summary>
+    /// The guard skips the request, even with a key, so nothing is stored. Use this when clients
+    /// can send a key to endpoints that were never meant to use it. Any endpoint without a marker
+    /// loses its duplicate protection. Routing must run before the guard, so calling
+    /// <c>UseRouting()</c> after <c>UseIdempotencyGuard()</c> fails at startup.
+    /// </summary>
+    Ignore
+}
+
+[Obsolete("Use UnmarkedEndpointBehavior: Allow is GuardWhenKeyPresent and Reject is RequireKey. This will be removed in 3.0.", DiagnosticId = "IDEMP001")]
 public enum MissingKeyPolicy
 {
     Allow,

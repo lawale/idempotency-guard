@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddIdempotencyGuard(options =>
 {
-    options.MissingKeyPolicy = MissingKeyPolicy.Reject;
+    options.UnmarkedEndpoints = UnmarkedEndpointBehavior.RequireKey;
 });
 
 builder.Services.AddIdempotencyGuardRedisStore("localhost:6379");
@@ -50,6 +50,8 @@ builder.Services.AddIdempotencyGuardRedisStore(options =>
     options.MinimumReconnectInterval = TimeSpan.FromSeconds(60);
 });
 ```
+
+The store's `KeyPrefix` (default `idempotency:`) goes in front of the key the middleware passes it, which already includes `IdempotencyOptions.KeyPrefix` if you set one. With both set as `"myapp:idempotency:"` and `"prod:"`, keys start with `myapp:idempotency:prod:`.
 
 Connections are created lazily on first use. If Redis is temporarily unavailable, the package keeps ownership of the multiplexer and attempts reconnects on demand. Reconnect attempts are throttled by `MinimumReconnectInterval`, and `AbortOnConnectFail = false` is always applied even if the connection string says otherwise.
 
