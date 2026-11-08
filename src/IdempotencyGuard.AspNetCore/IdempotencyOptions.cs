@@ -79,13 +79,18 @@ public class IdempotencyOptions
     public OversizedResponseBehavior OversizedResponse { get; set; } = OversizedResponseBehavior.RejectRetries;
 
     /// <summary>
-    /// Maximum number of request body bytes used for fingerprint hashing.
-    /// Bodies larger than this are fingerprinted using only the first N bytes.
-    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read
-    /// and a key reused with a different payload replays the first response. With the default
-    /// fingerprint builder, this can't be combined with <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>:
-    /// endpoint validation fails at startup, and without it each request to that endpoint fails
-    /// with an <see cref="InvalidOperationException"/> before anything is stored.
+    /// Maximum number of request body bytes used for fingerprint hashing. Default: 1 MB.
+    /// Bodies larger than this are fingerprinted using only the first N bytes. On an endpoint
+    /// with <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>, those bytes aren't
+    /// valid JSON, so the properties can't be picked out and the truncated bytes are hashed instead.
+    /// <para>
+    /// Set to 0 or less to stop reading the body. Only the method, path and any extra fingerprint
+    /// segments are hashed, so a key reused with a different payload replays the first response.
+    /// The default fingerprint builder refuses this on an endpoint with
+    /// <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>: endpoint validation
+    /// fails at startup, and without validation each request to that endpoint fails with an
+    /// <see cref="InvalidOperationException"/> before anything is stored or the handler runs.
+    /// </para>
     /// </summary>
     public int MaxFingerprintBodySize { get; set; } = 1_048_576;
 

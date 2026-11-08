@@ -135,7 +135,8 @@ builder.Services.AddIdempotencyGuard(options =>
 
     // Maximum request body bytes used for fingerprint hashing (default: 1 MB)
     // Bodies larger than this are fingerprinted using only the first N bytes.
-    // Set to 0 to skip body hashing entirely.
+    // Set to 0 to stop reading the body: a reused key with a different payload then replays.
+    // Endpoints with FingerprintProperties need the body, so they fail with 0.
     options.MaxFingerprintBodySize = 1_048_576;
 
     // Longest key accepted from a client (default: 1024). Longer keys get a 400. Set to 0 to disable.
