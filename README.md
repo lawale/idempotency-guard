@@ -406,7 +406,21 @@ It's off by default in production because of the cost. Reading the endpoints mak
 
 With it off, a misspelled policy name fails each request that uses it with an `InvalidOperationException` before the handler runs, so it can't bypass the guard. You just find out later. The route warning isn't logged if you set `EndpointFilter`, since a filter takes request paths rather than route patterns.
 
-`KeyPrefix` length and the warning about having no scope at all don't read endpoints, so they always run.
+It also warns about marked endpoints whose methods aren't in `EnforcedMethods`, because the guard skips those. A `[Idempotent]` `DELETE` is a common example. `GET`, `HEAD`, `OPTIONS` and `TRACE` are left out, since `[Idempotent]` on a controller marks its read actions too. And it fails if an endpoint sets `FingerprintProperties` while `MaxFingerprintBodySize` is 0, because the body is never read and a changed payload goes undetected. A custom `IFingerprintBuilder` is exempt from that one.
+
+The checks on option values don't read endpoints, so they always run, and the app fails to start if any of them fails:
+
+| Setting | Must be |
+|---|---|
+| `ClaimTtl`, `ResponseTtl` | Greater than zero. At zero, the same key runs the handler again |
+| `MaxResponseBodySize` | Greater than zero. At zero, every retry gets a 410 |
+| `HeaderName`, `ReplayedHeaderName` | Not empty |
+| `EnforcedMethods` | Not null |
+| `Cleanup`, `Cleanup.Interval`, `Cleanup.BatchSize`, `Cleanup.MaxIterationsPerSweep` | Not null, and greater than zero |
+| `KeyPrefix` | Within the length limit |
+| `MissingKeyPolicy` and `UnmarkedEndpoints` | Not set to different behaviours |
+
+The warning about having no scope at all doesn't read endpoints either, so it always runs.
 
 ## Key Prefixing
 

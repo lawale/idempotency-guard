@@ -81,7 +81,10 @@ public class IdempotencyOptions
     /// <summary>
     /// Maximum number of request body bytes used for fingerprint hashing.
     /// Bodies larger than this are fingerprinted using only the first N bytes.
-    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read.
+    /// Default: 1 MB. Set to 0 to skip body hashing entirely, in which case the body isn't read
+    /// and a key reused with a different payload replays the first response. With the default
+    /// fingerprint builder, this can't be combined with <see cref="AspNetCore.IdempotentAttribute.FingerprintProperties"/>,
+    /// which fails endpoint validation.
     /// </summary>
     public int MaxFingerprintBodySize { get; set; } = 1_048_576;
 
