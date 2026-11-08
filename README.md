@@ -151,8 +151,9 @@ builder.Services.AddIdempotencyGuard(options =>
     // Useful for namespacing by environment or tenant.
     options.KeyPrefix = "production:";
 
-    // Programmatic route-level opt-in/opt-out
-    options.EndpointFilter = (method, path) => path.StartsWith("/api/");
+    // Skip the guard by method and path. Returning false skips it even on marked endpoints.
+    // The path leaves out PathBase, so after UsePathBase("/api") this sees "/orders", not "/api/orders".
+    options.EndpointFilter = (method, path) => path.StartsWithSegments("/orders");
 });
 ```
 
@@ -325,7 +326,8 @@ builder.Services.AddIdempotencyGuard(options =>
     options.HeaderDenyList = ["X-Request-Id", "X-Correlation-Id"];
 
     // OR: use an allow list — ONLY these headers will be stored and replayed.
-    // When set, HeaderDenyList and the built-in defaults are ignored entirely.
+    // When it has entries, HeaderDenyList and the built-in defaults are ignored entirely.
+    // An empty allow list counts as not set.
     options.HeaderAllowList = ["Content-Type", "Location", "X-Custom-Header"];
 });
 ```
@@ -443,6 +445,8 @@ app.Use(async (context, next) =>
 ```
 
 The prefix is limited to 128 characters. End it with a delimiter, as above. Without one, `tenant-1` with the key `2abc` and `tenant-12` with the key `abc` get the same downstream key. Prefixes can't protect tenants from each other on their own, so scope keys as well if callers aren't trusted.
+
+A store with its own prefix adds it in front. The Redis store's `KeyPrefix` defaults to `idempotency:`, so with `options.KeyPrefix = "prod:"` its keys start with `idempotency:prod:`.
 
 ## Store Keys
 

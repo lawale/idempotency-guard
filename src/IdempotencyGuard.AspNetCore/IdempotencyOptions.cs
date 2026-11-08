@@ -94,7 +94,8 @@ public class IdempotencyOptions
     /// It stays readable in the store, ahead of the digest, so prefix scans still work. Limited to
     /// <see cref="IdempotencyStoreKey.MaxPrefixLength"/> characters. End it with a delimiter, or
     /// <c>tenant-1</c> with key <c>2abc</c> gets the same downstream key as <c>tenant-12</c> with <c>abc</c>.
-    /// Default: <c>null</c> (no prefix). Applied across all store implementations.
+    /// Default: <c>null</c> (no prefix). Applied across all store implementations. A store's own
+    /// prefix, such as the Redis store's <c>KeyPrefix</c>, is added in front of this one.
     /// </summary>
     public string? KeyPrefix { get; set; }
 
@@ -196,6 +197,15 @@ public class IdempotencyOptions
     [Obsolete("Call UseIdempotencyGuard() conditionally instead. This will be removed in 3.0.", DiagnosticId = DeprecationDiagnosticId)]
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Decides by method and path whether a request goes through the guard. Returning <c>false</c>
+    /// skips the guard, even on an endpoint marked with <see cref="IdempotentAttribute"/> or
+    /// <c>RequireIdempotency()</c>. It runs before the endpoint is looked at, on every request
+    /// whose method is in <see cref="EnforcedMethods"/>. The path is
+    /// <see cref="HttpRequest.Path"/>, which leaves out <see cref="HttpRequest.PathBase"/>: after
+    /// <c>UsePathBase("/api")</c>, a request to <c>/api/orders</c> arrives as <c>/orders</c>.
+    /// Default: <c>null</c> (no filter).
+    /// </summary>
     public Func<HttpMethod, string, bool>? EndpointFilter { get; set; }
 
     /// <summary>
@@ -207,14 +217,15 @@ public class IdempotencyOptions
 
     /// <summary>
     /// Additional response headers to exclude from storage beyond the built-in defaults
-    /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> is set.
+    /// (hop-by-hop + transient headers). Ignored if <see cref="HeaderAllowList"/> has any entries.
     /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderDenyList { get; set; }
 
     /// <summary>
-    /// If set, ONLY these response headers will be stored and replayed.
+    /// If set and not empty, ONLY these response headers will be stored and replayed.
     /// Overrides <see cref="HeaderDenyList"/> and the built-in defaults entirely.
+    /// An empty set counts as not set, so the deny lists apply.
     /// Uses case-insensitive comparison.
     /// </summary>
     public HashSet<string>? HeaderAllowList { get; set; }

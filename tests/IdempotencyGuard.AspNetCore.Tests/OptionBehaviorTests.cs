@@ -64,6 +64,26 @@ public sealed class OptionBehaviorTests : IAsyncLifetime
         second.Headers.Contains(ReplayedHeader).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Endpoint_filter_sees_the_path_without_the_path_base()
+    {
+        var seen = new List<string>();
+        var client = await StartAsync(
+            options => options.EndpointFilter = (_, path) =>
+            {
+                seen.Add(path);
+                return path == "/orders";
+            },
+            pathBase: "/api");
+
+        await client.SendAsync(Request(HttpMethod.Post, "key-1", "/api/orders"));
+        var second = await client.SendAsync(Request(HttpMethod.Post, "key-1", "/api/orders"));
+
+        seen.Should().AllBe("/orders");
+        second.Headers.Contains(ReplayedHeader).Should().BeTrue();
+        _handlerRuns.Should().Be(1);
+    }
+
     [Theory]
     [InlineData("X-Keep")]
     [InlineData("x-keep")]
@@ -199,7 +219,7 @@ public sealed class OptionBehaviorTests : IAsyncLifetime
         return replay;
     }
 
-    private async Task<HttpClient> StartAsync(Action<IdempotencyOptions> configure)
+    private async Task<HttpClient> StartAsync(Action<IdempotencyOptions> configure, string? pathBase = null)
     {
         _host = await new HostBuilder()
             .ConfigureWebHost(webBuilder =>
@@ -218,6 +238,8 @@ public sealed class OptionBehaviorTests : IAsyncLifetime
                 });
                 webBuilder.Configure(app =>
                 {
+                    if (pathBase is not null)
+                        app.UsePathBase(pathBase);
                     app.UseRouting();
                     app.UseIdempotencyGuard();
                     app.UseEndpoints(endpoints =>
@@ -238,9 +260,9 @@ public sealed class OptionBehaviorTests : IAsyncLifetime
         await context.Response.WriteAsync("ok");
     }
 
-    private static HttpRequestMessage Request(HttpMethod method, string key)
+    private static HttpRequestMessage Request(HttpMethod method, string key, string path = "/orders")
     {
-        var request = new HttpRequestMessage(method, "/orders")
+        var request = new HttpRequestMessage(method, path)
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json")
         };
